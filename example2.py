@@ -23,7 +23,7 @@ def T(X, Y, Z, bins):
 def T_binary(X, Y, Z, bins):
     Tks = np.zeros(len(bins))
     for k, b in enumerate(bins):
-        Tks[k] = (X[b[i]] - X[b[j]]) * (Y[b[i]] - Y[b[j]]) >= 0
+        Tks[k] = (X[b[0]] - X[b[1]]) * (Y[b[0]] - Y[b[1]]) >= 0
     
     return np.mean(Tks)
 
@@ -64,8 +64,7 @@ def fixed_bins(Z, bin_width):
 
 def main(recompute):
     ns = np.asarray([50, 100, 200, 400])
-    bin_width_exps = np.asarray([-1, -0.5, -0.4, -0.35, -0.25, -0.2])
-    support_size_exps = np.asanyarray([0, 0.25, 0.5, 0.75, 1])
+    bin_sizes = [2, 4, 8, 0.1, 0.25, 0.5]
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -73,86 +72,64 @@ def main(recompute):
     fig_dir  = Path("figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    f_adapt = data_dir / "example_2_ps_adaptive_bins.npy"
-    f_fixed = data_dir / "example_2_ps_fixed_bins.npy"
+    f_binary = data_dir / "example_2_ps_binary.npy"
     f_sizing = data_dir / "example_2_ps_sizing.npy"
 
     mc_reps = 100
     p_val_mc_reps = 100
 
     if recompute:
-        ps_adaptive_bins = utility.p_val_dist(
-            [n for _ in bin_width_exps for n in ns],
-            lambda n: sample_XYZ(n, 1, 0.0),
-            [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
-             for exp in bin_width_exps for n in ns],
-            T,
-            mc_reps=mc_reps,
-            p_val_mc_reps=p_val_mc_reps
-        )
-        np.save(f_adapt, ps_adaptive_bins)
-
-        ps_pareto = utility.p_val_dist(
-            [n for _ in bin_width_exps for n in ns],
-            lambda n: sample_XYZ_pareto(n, 1, 0.0),
-            [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
-             for exp in bin_width_exps for n in ns],
-            T,
-            mc_reps=mc_reps,
-            p_val_mc_reps=p_val_mc_reps
-        )
-        np.save(f_pareto, ps_pareto)
-
-        ps_nnpt = utility.p_val_dist(
-            [n for _ in support_size_exps for n in ns],
-            [lambda n, exp=exp: sample_XYZ(n, np.power(n, exp))
-             for exp in support_size_exps for n in ns],
+        test_fns = [T_binary, T]
+        ps_binary = utility.p_val_dist(
+            [n for _ in test_fns for n in ns],
+            lambda n: sample_XYZ(n, 1, 0.2),
             lambda Z: adaptive_bins(Z, 2),
+            [test_fn for test_fn in test_fns for n in ns],
+            mc_reps=mc_reps,
+            p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f_binary, ps_binary)
+
+        bin_sizes_with_n = [size if isinstance(size, int) else int(np.floor(2 * np.power(n, size)))
+                            for size in bin_sizes for n in ns]
+        ps_sizing = utility.p_val_dist(
+            [n for _ in bin_sizes for n in ns],
+            lambda n: sample_XYZ(n, 1, 0.2),
+            [lambda Z: adaptive_bins(Z, size) for size in bin_sizes_with_n],
             T,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
         )
-        np.save(f_nnpt, ps_nnpt)
+        np.save(f_sizing, ps_sizing)
 
     else:
         # load existing results
-        missing = [p for p in (f_adapt, f_pareto, f_nnpt) if not p.exists()]
+        missing = [p for p in (f_binary, f_sizing) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
                 + "\n".join(str(p) for p in missing)
             )
 
-        ps_adaptive_bins = np.load(f_adapt, allow_pickle=True)
-        ps_pareto = np.load(f_pareto, allow_pickle=True)
-        ps_nnpt = np.load(f_nnpt, allow_pickle=True)
+        ps_binary = np.load(f_binary, allow_pickle=True)
+        ps_sizing = np.load(f_sizing, allow_pickle=True)
 
     utility.plot_rejection(
-        utility.rejection_rates(ps_adaptive_bins),
+        utility.rejection_rates(ps_binary),
         ns,
-        bin_width_exps,
-        lambda exp: f"m = n^{1 + exp}",
-        savepath=fig_dir / "example_1_adaptive_bins.png",
+        ["binary", "nonbinary"],
+        lambda name: name,
+        savepath=fig_dir / "example_2_binary.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )
 
     utility.plot_rejection(
-        utility.rejection_rates(ps_pareto),
+        utility.rejection_rates(ps_sizing),
         ns,
-        bin_width_exps,
-        lambda exp: f"m = n^{1 + exp}",
-        savepath=fig_dir / "example_1_pareto.png",
-        x_axis = "n",
-        y_axis = "Type I error rate"
-    )
-
-    utility.plot_rejection(
-        utility.rejection_rates(ps_nnpt),
-        ns,
-        support_size_exps,
-        lambda exp: f"theta = n^{exp}",
-        savepath=fig_dir / "example_1_nnpt.png",
+        bin_sizes,
+        lambda exp: f"m = {size}" if isinstance(size, int) else f"m = n^{size}",
+        savepath=fig_dir / "example_2_sizing.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )
