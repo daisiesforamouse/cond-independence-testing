@@ -128,7 +128,7 @@ def main(recompute):
         utility.rejection_rates(ps_sizing),
         ns,
         bin_sizes,
-        lambda exp: f"m = {size}" if isinstance(size, int) else f"m = n^{size}",
+        lambda size: f"m = {size}" if isinstance(size, int) else f"m = n^{size}",
         savepath=fig_dir / "example_2_sizing.png",
         x_axis = "n",
         y_axis = "Type I error rate"
