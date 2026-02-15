@@ -27,7 +27,10 @@ def T_binary(X, Y, Z, bins):
     
     return np.mean(Tks)
 
-def sample_XYZ(n, theta, rho):
+def sample_XYZ(n, theta, rho, rng=rng):
+    if rng is None:
+        rng = np.random.default_rng()
+
     X = np.empty(n)
     Y = np.empty(n)
     Z = np.empty(n)
@@ -82,7 +85,7 @@ def main(recompute):
         test_fns = [T_binary, T]
         ps_binary = utility.p_val_dist(
             [n for _ in test_fns for n in ns],
-            lambda n: sample_XYZ(n, 1, 0.2),
+            lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
             lambda Z: adaptive_bins(Z, 2),
             [test_fn for test_fn in test_fns for n in ns],
             mc_reps=mc_reps,
@@ -94,7 +97,7 @@ def main(recompute):
                             for size in bin_sizes for n in ns]
         ps_sizing = utility.p_val_dist(
             [n for _ in bin_sizes for n in ns],
-            lambda n: sample_XYZ(n, 1, 0.2),
+            lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
             [lambda Z: adaptive_bins(Z, size) for size in bin_sizes_with_n],
             T,
             mc_reps=mc_reps,

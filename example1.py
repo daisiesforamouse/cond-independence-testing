@@ -8,7 +8,6 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-rng = np.random.default_rng()
 
 def T(X, Y, Z, bins):
     Tks = np.zeros(len(bins))
@@ -27,7 +26,10 @@ def T_binary(X, Y, Z, bins):
     
     return np.mean(Tks)
 
-def sample_XYZ(n, theta, rho):
+def sample_XYZ(n, theta, rho, *, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+
     X = np.empty(n)
     Y = np.empty(n)
     Z = np.empty(n)
@@ -40,16 +42,22 @@ def sample_XYZ(n, theta, rho):
 
     return X, Y, Z
 
-def sample_XYZ_pareto(n, theta, rho):
+def sample_XYZ_fat_tail(n, theta, rho, *, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+
     X = np.empty(n)
     Y = np.empty(n)
     Z = np.empty(n)
     
-    Z = rng.random(size = n)
-    U = rng.normal(size = n)
+    Z = rng.random(size=n)
+    U = rng.normal(size=n)
 
-    X = theta * Z + rho * U + rng.choice([-1, 1], size = n) * rng.pareto(2, size = n)
-    Y = theta * Z + rho * U + rng.choice([-1, 1], size = n) * rng.pareto(2, size = n)
+    # X = theta * Z + rho * U + rng.choice([-1, 1], size = n) * rng.fat_tail(2, size = n)
+    # Y = theta * Z + rho * U + rng.choice([-1, 1], size = n) * rng.fat_tail(2, size = n)
+
+    X = theta * Z + rho * U + rng.standard_cauchy(size=n)
+    Y = theta * Z + rho * U + rng.standard_cauchy(size=n)
 
     return X, Y, Z
 
@@ -79,7 +87,7 @@ def fixed_bins(Z, bin_width):
 def main(recompute):
     ns = np.asarray([50, 100, 200, 400])
     bin_width_exps = np.asarray([-1, -0.5, -0.4, -0.35, -0.25, -0.2])
-    support_size_exps = np.asanyarray([0, 0.25, 0.5, 0.75, 1])
+    support_size_exps = np.asarray([0, 0.25, 0.5, 0.75, 1.0])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -88,7 +96,7 @@ def main(recompute):
     fig_dir.mkdir(parents=True, exist_ok=True)
 
     f_adapt = data_dir / "example_1_ps_adaptive_bins.npy"
-    f_pareto = data_dir / "example_1_ps_pareto.npy"
+    f_fat_tail = data_dir / "example_1_ps_fat_tail.npy"
     f_nnpt = data_dir / "example_1_ps_nnpt.npy"
 
     mc_reps = 100
@@ -97,7 +105,7 @@ def main(recompute):
     if recompute:
         ps_adaptive_bins = utility.p_val_dist(
             [n for _ in bin_width_exps for n in ns],
-            lambda n: sample_XYZ(n, 1, 0.0),
+            lambda n, rng: sample_XYZ(n, 1, 0.0, rng=rng),
             [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
              for exp in bin_width_exps for n in ns],
             T,
@@ -106,20 +114,20 @@ def main(recompute):
         )
         np.save(f_adapt, ps_adaptive_bins)
 
-        ps_pareto = utility.p_val_dist(
+        ps_fat_tail = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
-            [lambda n, exp=exp: sample_XYZ_pareto(n, np.power(n, exp), 0.0)
+            [lambda n, rng, exp=exp: sample_XYZ_fat_tail(n, 10 * np.power(n, exp), 0.0, rng=rng)
              for exp in support_size_exps for n in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
         )
-        np.save(f_pareto, ps_pareto)
+        np.save(f_fat_tail, ps_fat_tail)
 
         ps_nnpt = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
-            [lambda n, exp=exp: sample_XYZ(n, np.power(n, exp), 0.0)
+            [lambda n, rng, exp=exp: sample_XYZ(n, np.power(n, exp), 0.0, rng=rng)
              for exp in support_size_exps for n in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
@@ -130,7 +138,7 @@ def main(recompute):
 
     else:
         # load existing results
-        missing = [p for p in (f_adapt, f_pareto, f_nnpt) if not p.exists()]
+        missing = [p for p in (f_adapt, f_fat_tail, f_nnpt) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
@@ -138,7 +146,7 @@ def main(recompute):
             )
 
         ps_adaptive_bins = np.load(f_adapt, allow_pickle=True)
-        ps_pareto = np.load(f_pareto, allow_pickle=True)
+        ps_fat_tail = np.load(f_fat_tail, allow_pickle=True)
         ps_nnpt = np.load(f_nnpt, allow_pickle=True)
 
     utility.plot_rejection(
@@ -152,11 +160,11 @@ def main(recompute):
     )
 
     utility.plot_rejection(
-        utility.rejection_rates(ps_pareto),
+        utility.rejection_rates(ps_fat_tail),
         ns,
-        bin_width_exps,
-        lambda exp: f"m = n^{1 + exp}",
-        savepath=fig_dir / "example_1_pareto.png",
+        support_size_exps,
+        lambda exp: f"theta = n^{exp}",
+        savepath=fig_dir / "example_1_fat_tail.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )

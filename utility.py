@@ -1,3 +1,4 @@
+from joblib import Parallel, delayed, wrap_non_picklable_objects
 import lpt
 
 from tqdm import tqdm
@@ -12,7 +13,9 @@ def p_val_dist(n,
                T,
                mc_reps=1000,
                p_val_mc_reps=1000,
-               progress=True):
+               progress=True,
+               n_jobs=-1,
+               base_seed=0):
     """
     Computes a matrix of p-values where each entry corresponds to a Monte Carlo simulation. Each row p[i]
     corresponds to the settings enforced by the i-th values in the arguments.
@@ -44,31 +47,52 @@ def p_val_dist(n,
             return x[b]
         return x
 
-    ps_list = []
-    it = range(B)
-    if progress and B > 1:
-        it = tqdm(it, desc="Batches", position=0, leave=True, ncols=80)
-        tqdm_pos = 1
+    root_ss = np.random.SeedSequence(base_seed)
 
-    for b in it:
+    def one_rep(rep_ss, nb, sampling_fnb, binning_fnb, Tb, p_val_mc_repsb):
+        # Derive two independent seeds from the replicate SeedSequence:
+        # one for data generation, one for permutation test.
+        data_ss, test_ss = rep_ss.spawn(2)
+        data_rng = np.random.default_rng(data_ss)
+        test_seed = int(test_ss.generate_state(1, dtype=np.uint32)[0])
+
+        X, Y, Z = sampling_fnb(nb, data_rng)
+        bins = binning_fnb(Z)
+
+        return lpt.test_ci(
+            X, Y, Z, bins, Tb,
+            mc_reps=int(p_val_mc_repsb),
+            seed=test_seed,
+            n_jobs=1,
+        )
+
+    ps_list = []
+    outer = range(B)
+    if progress and B > 1:
+        outer = tqdm(outer, desc="Batches", ncols=80)
+
+    for b in outer:
         nb = int(get(n, b))
-        sampling_fnb = get(sampling_fn, b)
-        binning_fnb = get(binning_fn, b)
-        Tb = get(T, b)
         mc_repsb = int(get(mc_reps, b))
         p_val_mc_repsb = int(get(p_val_mc_reps, b))
 
-        ps = np.empty(mc_repsb)
-        inner = range(mc_repsb)
+        sampling_fnb = wrap_non_picklable_objects(get(sampling_fn, b))
+        binning_fnb = wrap_non_picklable_objects(get(binning_fn, b))
+        Tb = wrap_non_picklable_objects(get(T, b)) if is_seq(T) else T
+
+        # Per-batch seed sequence, then per-rep seed sequences
+        batch_ss = root_ss.spawn(1)[0] if B == 1 else root_ss.spawn(B)[b]
+        rep_ss_list = batch_ss.spawn(mc_repsb)
+
+        it = range(mc_repsb)
         if progress:
-            inner = tqdm(inner, desc="Simulating p-value distribution", position=tqdm_pos, leave=False, ncols=80)
+            it = tqdm(it, desc="Simulating p-value distribution", leave=False, ncols=80)
 
-        for i in inner:
-            X, Y, Z = sampling_fnb(nb)
-            bins = binning_fnb(Z)
-            ps[i] = lpt.test_ci(X, Y, Z, bins, Tb, mc_reps=p_val_mc_repsb)
-
-        ps_list.append(ps)
+        ps = Parallel(n_jobs=n_jobs, backend="loky")(
+            delayed(one_rep)(rep_ss_list[i], nb, sampling_fnb, binning_fnb, Tb, p_val_mc_repsb)
+            for i in it
+        )
+        ps_list.append(np.asarray(ps, dtype=float))
 
     return ps_list
 
@@ -112,8 +136,6 @@ def plot_rejection(rejection_rates,
         fig = ax.figure
 
     for i, param in enumerate(params):
-        # your adaptive bin-size choice in example1.py:
-        # bin_size = np.floor(2 * np.power(ns, 1.0 + param)).astype(int)
         ax.plot(x_params, Y[i], marker="o", linewidth=2, label=get_param_label(param))
 
     ax.axhline(alpha, color="k", linestyle="--", linewidth=1, label=f"alpha={alpha}")
@@ -177,7 +199,7 @@ def plot_Z_bins_connected(Z, bins, *, ax=None, s=35, alpha=0.9, lw=1.5,
             sns.scatterplot(x=pts[:, 0], y=pts[:, 1], ax=ax, s=s, alpha=alpha,
                             color=colors[b], linewidth=0)
 
-        # connect points within the bin (polyline in given index order)
+        # connect points within the bin
         if idx.size >= 2:
             ax.plot(pts[:, 0], pts[:, 1], color=colors[b], lw=lw, alpha=0.9)
 

@@ -1,35 +1,56 @@
 from joblib import Parallel, delayed
+import joblib
 
 from tqdm.auto import tqdm
 from tqdm_joblib import tqdm_joblib
 
+
 import numpy as np
 
-def swap(X, bins, perms = None):
-    if perms == None:
-        perms = [np.random.permutation(b) for b in bins]
+def swap(X, bins, *, perms=None, rng=None):
+    n = len(X)
 
-    X_swapped = np.copy(X)
-    for bin, perm in zip(bins, perms):
-        for i, j in zip(bin, perm):
-            X_swapped[j] = X[i]
+    if perms is None:
+        if rng is None:
+            rng = np.random.default_rng()
+        perms = [rng.permutation(b) for b in bins]
 
-    return X_swapped
+    idx = np.arange(n)
+    for b, p in zip(bins, perms):
+        b = np.asarray(b, dtype=int)
+        p = np.asarray(p, dtype=int)
+        idx[p] = b
+
+    return X[idx]
 
 def test_ci(X, Y, Z,
             bins,
             T,
             mc_reps=1000,
+            batch_size=20,
             n_jobs=-2,
             seed = None):
-    rng = np.random.default_rng(seed)
-    seeds = rng.integers(0, 2**32 - 1, size=mc_reps, dtype=np.uint32)
+    if isinstance(seed, np.random.SeedSequence):
+        root_ss = seed
+    else:
+        root_ss = np.random.SeedSequence(seed)
 
-    def one_mc_rep(s):
-        np.random.seed(int(s))
-        return T(swap(X, bins), Y, Z, bins)
+    rep_ss = root_ss.spawn(int(mc_reps))
 
-    perm_stats = np.array(Parallel(n_jobs=n_jobs)(delayed(one_mc_rep)(s) for s in seeds))
+    rep_ss_batches = [rep_ss[i:i + batch_size] for i in range(0, mc_reps, batch_size)]
 
-    p = np.mean(perm_stats >= T(X, Y, Z, bins))
-    return p
+    def one_batch(ss_batch):
+        out = np.empty(len(ss_batch), dtype=float)
+        for j, ss in enumerate(ss_batch):
+            r = np.random.default_rng(ss)
+            out[j] = T(swap(X, bins, rng=r), Y, Z, bins)
+        return out
+
+    perm_stats = np.concatenate(
+        Parallel(n_jobs=n_jobs, backend="loky")(
+            delayed(one_batch)(sb) for sb in rep_ss_batches
+        )
+    )
+
+    T_original = T(X, Y, Z, bins)
+    return float(np.mean(perm_stats >= T_original))
