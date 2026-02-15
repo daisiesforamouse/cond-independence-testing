@@ -1,6 +1,9 @@
 import lpt
 import utility
 
+import argparse
+from pathlib import Path
+
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -137,14 +140,12 @@ def fixed_bins_2d(Z, bin_width, zmin=None):
     # return just the bins (order doesn't matter for most uses)
     return list(bins_dict.values())
 
-def greedy_knn_bins(Z, k, knn=100, trials=100, seed=0):
+def greedy_knn_bins(Z, k, *, seed=0):
     """
     Greedy partition into groups of size k, aiming to minimize max pairwise
     distance within each group (diameter).
 
     Z: (n, d)
-    knn: how many nearest neighbors to consider per seed point
-    trials: how many random candidate (k-1)-subsets to try from the knn list
     """
 
     def group_diameter(Z):
@@ -169,40 +170,163 @@ def greedy_knn_bins(Z, k, knn=100, trials=100, seed=0):
         if not unused[i]:
             continue
 
-        # candidate neighbors (including i itself) from kNN
-        nn = []
-        num_to_check = knn
-        while len(nn) < k - 1:
-            d, nn = tree.query(Z[i], k=min(num_to_check, n))
-            nn = [j for j in nn if unused[j] and j != i]
-            num_to_check = min(num_to_check * 2, n)
+        # query more than k points if needed, because some neighbors may be already used
+        num_to_check = min(max(2 * k, k + 1), n)
+        while True:
+            _, nn = tree.query(Z[i], k=num_to_check)
+            nn = np.atleast_1d(nn)
 
-        # pick best subset of size k-1 from candidates via random trials
-        best = None
-        best_diam = np.inf
+            # keep only unused points (including i)
+            nn = [j for j in nn if unused[j]]
+            if len(nn) >= k:
+                group = np.array(nn[:k], dtype=int)  # includes i since i is unused and distance 0
+                break
 
-        # always include i, choose k-1 from nn
-        for _ in range(trials):
-            sel = rng.choice(nn, size=k-1, replace=False)
-            idx = np.concatenate([[i], sel])
-            diam = group_diameter(Z[idx])
-            if diam < best_diam:
-                best_diam = diam
-                best = idx
+            num_to_check = min(2 * num_to_check, n)
 
-        bins.append(best)
-        for j in best:
-            unused[j] = False
+        if group is None:
+            break
+
+        bins.append(group)
+        unused[group] = False
 
     leftovers = np.flatnonzero(unused)
-    bins.append(leftovers)
+    if len(leftovers):
+        bins.append(leftovers)
 
     return bins
 
-def main(recompute: bool):
+def sa_bins(
+    Z,
+    k,
+    *,
+    seed=0,
+    steps=50_000,
+    T0=1.0,
+    Tend=1e-4,
+    p_norm=2,
+):
+    """
+    Simulated-annealing partition of points into groups of size k (last group may be smaller).
+
+    This is a *different solver* than greedy_knn_bins: it formulates the problem as:
+      minimize sum_b cost(bin_b)
+    over partitions with fixed bin sizes, and uses SA with point-swap moves.
+
+    Parameters
+    ----------
+    Z : (n, d) array
+    k : int
+    steps : int
+        Number of SA iterations.
+    T0, Tend : float
+        Temperature schedule endpoints (geometric).
+    init : str
+        "random": random partition.
+    objective : str
+        "diameter": bin cost = max pairwise distance within bin.
+        "sse":      bin cost = sum squared distances to bin mean (k-means-like).
+    p_norm : int/float
+        Norm for diameter computation when objective="diameter".
+
+    Returns
+    -------
+    bins : list[np.ndarray]
+        List of index arrays. All but last have size k; last has size n % k (or k if divisible).
+    """
+    Z = np.asarray(Z)
+    n = Z.shape[0]
+    if k <= 0:
+        raise ValueError("k must be positive")
+    if n == 0:
+        return []
+    if k >= n:
+        return [np.arange(n)]
+
+    rng = np.random.default_rng(seed)
+
+    def bin_cost(idx):
+        m = len(idx)
+        if m <= 1:
+            return 0.0
+        X = Z[idx]
+        diffs = X[:, None, :] - X[None, :, :]
+        if p_norm == 2:
+            D2 = np.sum(diffs * diffs, axis=-1)
+            return float(np.sqrt(np.max(D2)))
+        else:
+            D = np.linalg.norm(diffs, ord=p_norm, axis=-1)
+            return float(np.max(D))
+
+    perm = np.arange(n)
+    rng.shuffle(perm)
+
+    bins = greedy_knn_bins(Z, k)
+
+    B = len(bins)
+    if B <= 1:
+        return bins
+
+    # bin lookup table
+    p2b = -np.ones(n, dtype=int)
+    for i, b in enumerate(bins):
+        p2b[b] = i
+
+    # per-bin costs
+    costs = np.array([bin_cost(b) for b in bins], dtype=float)
+    cur = float(costs.sum())
+
+    best_bins = [b.copy() for b in bins]
+    best = cur
+
+    # temperature schedule (geometric)
+    Ts = np.geomspace(T0, Tend, num=max(2, steps))
+
+    # swap bins in two bins for simulated annealing
+    for t in range(steps):
+        T = Ts[t]
+
+        # choose two different bins
+        i, bj = rng.integers(0, B, size=2)
+        if i == bj:
+            continue
+
+        # choose points within those bins
+        ai = int(rng.choice(bins[i]))
+        aj = int(rng.choice(bins[bj]))
+
+        # potential swap
+        new_bi = bins[i].copy()
+        new_bj = bins[bj].copy()
+        new_bi[new_bi == ai] = aj
+        new_bj[new_bj == aj] = ai
+
+        old_ci, old_cj = costs[i], costs[bj]
+        new_ci, new_cj = bin_cost(new_bi), bin_cost(new_bj)
+
+        new_cur = cur - old_ci - old_cj + new_ci + new_cj
+        delta = new_cur - cur
+
+        # accept/reject
+        if delta <= 0 or rng.random() < np.exp(-delta / max(T, 1e-12)):
+            bins[i] = new_bi
+            bins[bj] = new_bj
+            costs[i] = new_ci
+            costs[bj] = new_cj
+            cur = new_cur
+
+            p2b[ai], p2b[aj] = bj, i
+
+            if cur < best:
+                best = cur
+                best_bins = [b.copy() for b in bins]
+
+    out = best_bins
+    return out
+
+def main(recompute):
     ns = np.asarray([50, 100, 200, 400])
-    bin_width_exps = np.asarray([-1, -0.5, -0.4, -0.35, -0.25, -0.2])
-    support_size_exps = np.asanyarray([0, 0.25, 0.5, 0.75, 1])
+    bin_sizes = np.asarray([2, 4, 8, 16])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -210,82 +334,40 @@ def main(recompute: bool):
     fig_dir  = Path("figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    mc_reps = 250
-    p_val_mc_reps = 250
+    f_2d_sizing = data_dir / "example_3_2d_sizing.npy"
+
+    mc_reps = 100
+    p_val_mc_reps = 100
 
     if recompute:
-        ps_adaptive_bins = utility.p_val_dist(
-            [n for _ in bin_width_exps for n in ns],
-            lambda n: sample_XYZ(n, 1, 0.0),
-            [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
-             for exp in bin_width_exps for n in ns],
+        ps_2d_sizing = utility.p_val_dist(
+            [n for _ in bin_sizes for n in ns],
+            lambda n: sample_XYZ_circular(n, 0.1, 0.0),
+            [lambda Z, n=n, size=size: sa_bins(Z, size)
+             for size in bin_sizes for n in ns],
             T,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
         )
-        np.save(data_dir / "example_1_ps_adaptive_bins.npy", ps_adaptive_bins)
-
-        ps_pareto = utility.p_val_dist(
-            [n for _ in bin_width_exps for n in ns],
-            lambda n: sample_XYZ_pareto(n, 1, 0.0),
-            [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
-             for exp in bin_width_exps for n in ns],
-            T,
-            mc_reps=mc_reps,
-            p_val_mc_reps=p_val_mc_reps
-        )
-        np.save(data_dir / "example_1_ps_pareto.npy", ps_pareto)
-
-        ps_nnpt = utility.p_val_dist(
-            [n for _ in support_size_exps for n in ns],
-            [lambda n, exp=exp: sample_XYZ(n, 1, np.power(n, exp))
-             for exp in support_size_exps for n in ns],
-            lambda Z: adaptive_bins(Z, 2),
-            T,
-            mc_reps=mc_reps,
-            p_val_mc_reps=p_val_mc_reps
-        )
-        np.save(data_dir / "example_1_ps_nnpt.npy", ps_nnpt)
+        np.save(f_2d_sizing, ps_2d_sizing)
 
     else:
         # load existing results
-        missing = [p for p in (f_fixed, f_adapt, f_pareto) if not p.exists()]
+        missing = [p for p in (f_2d_sizing) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
                 + "\n".join(str(p) for p in missing)
             )
 
-        # ps_fixed_bins = np.load(f_fixed, allow_pickle=True)
-        ps_adaptive_bins = np.load(f_adapt, allow_pickle=True)
-        ps_pareto = np.load(f_pareto, allow_pickle=True)
+        ps_2d_sizing = np.load(f_2d_sizing, allow_pickle=True)
 
     utility.plot_rejection(
-        utility.rejection_rates(ps_adaptive_bins),
+        utility.rejection_rates(ps_2d_sizing),
         ns,
-        bin_width_exps,
-        lambda exp: f"m = n^{1 + exp}",
-        savepath=fig_dir / "example_1_adaptive_bins.png",
-        x_axis = "n",
-        y_axis = "Type I error rate"
-    )
-
-    utility.plot_rejection(
-        utility.rejection_rates(ps_pareto),
-        ns,
-        bin_width_exps,
-        lambda exp: f"m = n^{1 + exp}",
-        savepath=fig_dir / "example_1_pareto.png",
-        x_axis = "n",
-        y_axis = "Type I error rate"
-    )
-
-    utility.plot_rejection(
-        utility.rejection_rates(ps_nnpt),
-        ns,
-        support_size_exps,
-        lambda exp: f"theta = n^{exp}",
-        savepath=fig_dir / "example_1_nnpt.png"
+        bin_sizes,
+        lambda exp: f"m = n^{exp}",
+        savepath=fig_dir / "example_3_2d_sizing.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )
@@ -301,13 +383,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(args.recompute)
         
-ps = utility.p_val_dist(500,
-                        0.05,
-                        lambda n: sample_XYZ_circular(n, 0.25, 1),
-                        lambda Z: greedy_knn_bins(Z, 10),
-                        T,
-                        mc_reps=100,
-                        p_val_mc_reps=100)
+# ps = utility.p_val_dist(500,
+#                         0.05,
+#                         lambda n: sample_XYZ_circular(n, 0.25, 1),
+#                         lambda Z: greedy_knn_bins(Z, 10),
+#                         T,
+#                         mc_reps=100,
+#                         p_val_mc_reps=100)
 
 
 # ps_binary = utility.p_val_dist(500,

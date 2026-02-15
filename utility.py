@@ -128,3 +128,60 @@ def plot_rejection(rejection_rates,
         fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
 
     return fig, ax
+
+
+def plot_Z_bins_connected(Z, bins, *, ax=None, s=35, alpha=0.9, lw=1.5,
+                          palette="tab20", show_points=True):
+    """
+    Scatter plot of 2D points Z, with points belonging to the same bin connected.
+
+    Parameters
+    ----------
+    Z : (n, 2) array-like
+    bins : list of list[int] (or arrays)
+        bins[b] contains indices of points in that bin.
+    ax : matplotlib Axes or None
+    s, alpha : scatter styling
+    lw : line width for connections
+    palette : seaborn palette name or list of colors
+    show_points : bool
+        If True, draw points as well as connecting lines.
+
+    Returns
+    -------
+    fig, ax
+    """
+    Z = np.asarray(Z)
+    if Z.ndim != 2 or Z.shape[1] != 2:
+        raise ValueError(f"Expected Z of shape (n, 2), got {Z.shape}")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6))
+    else:
+        fig = ax.figure
+
+    colors = sns.color_palette(palette, n_colors=max(1, len(bins)))
+
+    if show_points:
+        sns.scatterplot(x=Z[:, 0], y=Z[:, 1], ax=ax, s=s, alpha=alpha, color="k", linewidth=0)
+
+    for b, idx in enumerate(bins):
+        idx = np.asarray(idx, dtype=int)
+        if idx.size == 0:
+            continue
+
+        pts = Z[idx]
+
+        # draw colored points for this bin (on top)
+        if show_points:
+            sns.scatterplot(x=pts[:, 0], y=pts[:, 1], ax=ax, s=s, alpha=alpha,
+                            color=colors[b], linewidth=0)
+
+        # connect points within the bin (polyline in given index order)
+        if idx.size >= 2:
+            ax.plot(pts[:, 0], pts[:, 1], color=colors[b], lw=lw, alpha=0.9)
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Z1")
+    ax.set_ylabel("Z2")
+    return fig, ax
