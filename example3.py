@@ -13,48 +13,46 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
-rng = np.random.default_rng(0)
+def center(X):
+    row_mean = X.mean(axis=1, keepdims=True)
+    col_mean = X.mean(axis=0, keepdims=True)
+    grand_mean = X.mean()
+    return X - row_mean - col_mean + grand_mean
 
 def T(X, Y, Z, bins):
     Tks = np.zeros(len(bins))
     for k, b in enumerate(bins):
-        avg_X_bin = np.mean(X[b])
-        avg_Y_bin = np.mean(Y[b])
-        Tks[k] = np.sum(np.abs([X[i] * Y[i] - avg_X_bin * avg_Y_bin for i in b]))
+        m = len(b)
+        if m > 1:
+            xb = X[b] 
+            yb = Y[b]
+
+            dx = xb[:, None] - xb[None, :]
+            dy = yb[:, None] - yb[None, :]
+
+            gram_X = np.exp(-(dx * dx) / 2.0)
+            gram_Y = np.exp(-(dy * dy) / 2.0)
+
+            gram_X -= gram_X.mean(axis=0, keepdims=True)
+            gram_Y -= gram_Y.mean(axis=0, keepdims=True)
+
+            centering_matrix = np.eye(m) - np.ones((m, m)) / m
+
+            Tks[k] = np.trace(center(gram_X) @ center(gram_Y)) / (m * m)
     return np.sum(Tks)
 
-def T_binary(X, Y, Z, bins):
-    Tks = np.zeros(len(bins))
-    for k, b in enumerate(bins):
-        avg_X_bin = np.mean(X[b])
-        avg_Y_bin = np.mean(Y[b])
-        sd_X_bin = np.std(X[b])
-        sd_Y_bin = np.std(Y[b])
-        Tks[k] = 2 * (np.sum(np.abs(X[b] + Y[b] - avg_X_bin - avg_Y_bin)) > len(b) * (sd_X_bin + sd_Y_bin)) - 1
-    return np.sum(Tks)
-
-def sample_XYZ_linear(n, theta, rho):
-    X = np.empty(n)
-    Y = np.empty(n)
-    Z = np.empty(n)
-    
-    Z = rng.random(size = n)
-    U = rng.normal(size = n)
-
-    X = theta * Z + rho * U + rng.normal(size = n)
-    Y = theta * Z + rho * U + rng.normal(size = n)
-
-    return X, Y, Z
-
-def sample_XYZ_circular(n, rho = 0.0, theta = 0.0):
+def sample_XYZ_circular(n, rho, theta, *, rng):
     """
     Z has polar representation (radius, angle), where radius is log-normal and angle is uniform on [0, 2pi].
-    X, Y are maringally N(|Z|, 1) with correlation rho * (cos(theta * Z_1) + cos(theta * Z_2))
+    X, Y are maringally N(radius, 1) with correlation rho * sin(theta * angle)
 
     n: number of samples
     rho: strength of X, Y correlation 
     theta: strength of the oscillation of the X, Y correlation
     """
+    if rng is None:
+        rng = np.random.default_rng()
+
     X = np.empty(n)
     Y = np.empty(n)
     Z = np.empty(n)
@@ -64,13 +62,10 @@ def sample_XYZ_circular(n, rho = 0.0, theta = 0.0):
 
     Z = np.array([[radius * np.cos(angle), radius * np.sin(angle)] for angle, radius in zip(angles, radii)])
 
-    def cov(z_1, z_2):
-        return np.array([[1.0, 0.5 * rho * (np.cos(theta * z_1) + np.cos(theta * z_2))],
-                         [0.5 * rho * (np.cos(theta * z_1) + np.cos(theta * z_2)), 1.0]])
-
     for i in range(n):
-        X[i], Y[i] = rng.multivariate_normal([np.linalg.norm(Z[i]), np.linalg.norm(Z[i])],
-                                             cov(*Z[i]))
+        X[i], Y[i] = rng.multivariate_normal([radii[i], radii[i]],
+                                             np.array([[1.0, rho * np.sin(theta * angles[i])],
+                                                       [rho * np.sin(theta * angles[i]), 1.0]]))
 
     return X, Y, Z
 
@@ -87,7 +82,6 @@ def fixed_bins(Z, bin_width):
     """
     Partitions Z into bins [0, bin_width], [bin_width, 2 * bin_width], so on
     """
-    print(bin_width)
     bin_nums = np.floor(Z / bin_width).astype(int)
     bins = [[] for _ in range(np.max(bin_nums) + 1)]
 
@@ -325,8 +319,12 @@ def sa_bins(
     return out
 
 def main(recompute):
-    ns = np.asarray([50, 100, 200, 400])
-    bin_sizes = np.asarray([2, 4, 8, 16])
+    ns = np.asarray([50, 100, 200, 400, 800])
+    bin_sizes = np.asarray([4, 8, 16])
+    grid_sizes = np.asarray([0.1, 0.2, 0.3, 0.4, 0.5])
+
+    bin_sizes_1d = np.asarray([2, 4, 8, 0.1, 0.25, 0.5])
+    grid_sizes_1d = np.asarray([-1, -0.75, -0.5])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -335,14 +333,15 @@ def main(recompute):
     fig_dir.mkdir(parents=True, exist_ok=True)
 
     f_2d_sizing = data_dir / "example_3_2d_sizing.npy"
+    f_2d_fixed = data_dir / "example_3_2d_fixed.npy"
 
-    mc_reps = 100
-    p_val_mc_reps = 100
+    mc_reps = 250
+    p_val_mc_reps = 250
 
     if recompute:
         ps_2d_sizing = utility.p_val_dist(
             [n for _ in bin_sizes for n in ns],
-            lambda n: sample_XYZ_circular(n, 0.1, 0.0),
+            lambda n, rng: sample_XYZ_circular(n, 0.5, 5.0, rng=rng),
             [lambda Z, n=n, size=size: sa_bins(Z, size)
              for size in bin_sizes for n in ns],
             T,
@@ -351,9 +350,19 @@ def main(recompute):
         )
         np.save(f_2d_sizing, ps_2d_sizing)
 
+        ps_2d_fixed = utility.p_val_dist(
+            [n for _ in grid_sizes for n in ns],
+            lambda n, rng: sample_XYZ_circular(n, 0.5, 5.0, rng=rng),
+            [lambda Z, n=n, size=size: fixed_bins_2d(Z, size)
+             for size in grid_sizes for n in ns],
+            T,
+            mc_reps=mc_reps,
+            p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f_2d_fixed, ps_2d_fixed)
     else:
         # load existing results
-        missing = [p for p in (f_2d_sizing) if not p.exists()]
+        missing = [p for p in (f_2d_sizing, f_2d_fixed) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
@@ -361,16 +370,28 @@ def main(recompute):
             )
 
         ps_2d_sizing = np.load(f_2d_sizing, allow_pickle=True)
+        ps_2d_fixed = np.load(f_2d_fixed, allow_pickle=True)
 
     utility.plot_rejection(
         utility.rejection_rates(ps_2d_sizing),
         ns,
         bin_sizes,
-        lambda exp: f"m = n^{exp}",
+        lambda size: f"m = {size}",
         savepath=fig_dir / "example_3_2d_sizing.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )
+
+    utility.plot_rejection(
+        utility.rejection_rates(ps_2d_fixed),
+        ns,
+        grid_sizes,
+        lambda size: f"grid size = {size}",
+        savepath=fig_dir / "example_3_2d_fixed.png",
+        x_axis = "n",
+        y_axis = "Type I error rate"
+    )
+
 
 
 if __name__ == "__main__":

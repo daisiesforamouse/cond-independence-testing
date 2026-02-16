@@ -8,16 +8,25 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-rng = np.random.default_rng()
-
 def T(X, Y, Z, bins):
     Tks = np.zeros(len(bins))
     for k, b in enumerate(bins):
-        i_idx, j_idx = np.triu_indices(len(b), k=1)
-        for i, j in zip(i_idx, j_idx):
-            Tks[k] += (X[b[i]] - X[b[j]]) * (Y[b[i]] - Y[b[j]])
-        if len(b) > 1:
-            Tks[k] /= len(b) * (len(b) - 1) / 2
+        b = np.asarray(b, dtype=np.intp)
+        m = b.size
+        if m <= 1:
+            continue
+
+        xb = X[b]
+        yb = Y[b]
+
+        sxy = np.dot(xb, yb)
+        sx  = xb.sum()
+        sy  = yb.sum()
+
+        pair_sum = m * sxy - sx * sy
+
+        Tks[k] = pair_sum / (m * (m - 1))
+
     return np.sum(Tks)
 
 def T_binary(X, Y, Z, bins):
@@ -27,7 +36,7 @@ def T_binary(X, Y, Z, bins):
     
     return np.mean(Tks)
 
-def sample_XYZ(n, theta, rho, rng=rng):
+def sample_XYZ(n, theta, rho, *, rng):
     if rng is None:
         rng = np.random.default_rng()
 
@@ -56,7 +65,6 @@ def fixed_bins(Z, bin_width):
     """
     Partitions Z into bins [0, bin_width], [bin_width, 2 * bin_width], so on
     """
-    print(bin_width)
     bin_nums = np.floor(Z / bin_width).astype(int)
     bins = [[] for _ in range(np.max(bin_nums) + 1)]
 
@@ -66,7 +74,7 @@ def fixed_bins(Z, bin_width):
     return bins
 
 def main(recompute):
-    ns = np.asarray([50, 100, 200, 400])
+    ns = np.asarray([50, 100, 200, 400, 800, 1600])
     bin_sizes = [2, 4, 8, 0.1, 0.25, 0.5]
 
     data_dir = Path("data")
@@ -77,9 +85,10 @@ def main(recompute):
 
     f_binary = data_dir / "example_2_ps_binary.npy"
     f_sizing = data_dir / "example_2_ps_sizing.npy"
+    f_fixed = data_dir / "example_2_ps_fixed.npy"
 
-    mc_reps = 100
-    p_val_mc_reps = 100
+    mc_reps = 400
+    p_val_mc_reps = 400
 
     if recompute:
         test_fns = [T_binary, T]
@@ -93,7 +102,7 @@ def main(recompute):
         )
         np.save(f_binary, ps_binary)
 
-        bin_sizes_with_n = [size if isinstance(size, int) else int(np.floor(2 * np.power(n, size)))
+        bin_sizes_with_n = [size if size > 1 else int(np.floor(2 * np.power(n, size)))
                             for size in bin_sizes for n in ns]
         ps_sizing = utility.p_val_dist(
             [n for _ in bin_sizes for n in ns],
@@ -105,6 +114,16 @@ def main(recompute):
         )
         np.save(f_sizing, ps_sizing)
 
+        bin_widths_with_n = np.asarray(bin_sizes_with_n) / np.asarray([n for _ in bin_sizes for n in ns])
+        ps_fixed = utility.p_val_dist(
+            [n for _ in bin_sizes for n in ns],
+            lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
+            [lambda Z: fixed_bins(Z, width) for width in bin_widths_with_n],
+            T,
+            mc_reps=mc_reps,
+            p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f_fixed, ps_fixed)
     else:
         # load existing results
         missing = [p for p in (f_binary, f_sizing) if not p.exists()]
@@ -116,6 +135,7 @@ def main(recompute):
 
         ps_binary = np.load(f_binary, allow_pickle=True)
         ps_sizing = np.load(f_sizing, allow_pickle=True)
+        ps_fixed = np.load(f_fixed, allow_pickle=True)
 
     utility.plot_rejection(
         utility.rejection_rates(ps_binary),
@@ -131,8 +151,18 @@ def main(recompute):
         utility.rejection_rates(ps_sizing),
         ns,
         bin_sizes,
-        lambda size: f"m = {size}" if isinstance(size, int) else f"m = n^{size}",
+        lambda size: f"m = {size}" if size > 1 else f"m = n^{size}",
         savepath=fig_dir / "example_2_sizing.png",
+        x_axis = "n",
+        y_axis = "Type I error rate"
+    )
+
+    utility.plot_rejection(
+        utility.rejection_rates(ps_fixed),
+        ns,
+        bin_sizes,
+        lambda size: f"width = {size} / n" if size > 1 else f"width = n^{size - 1}",
+        savepath=fig_dir / "example_2_fixed.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )

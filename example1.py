@@ -8,15 +8,25 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-
 def T(X, Y, Z, bins):
     Tks = np.zeros(len(bins))
     for k, b in enumerate(bins):
-        i_idx, j_idx = np.triu_indices(len(b), k=1)
-        for i, j in zip(i_idx, j_idx):
-            Tks[k] += (X[b[i]] - X[b[j]]) * (Y[b[i]] - Y[b[j]])
-        if len(b) > 1:
-            Tks[k] /= len(b) * (len(b) - 1) / 2
+        b = np.asarray(b, dtype=np.intp)
+        m = b.size
+        if m <= 1:
+            continue
+
+        xb = X[b]
+        yb = Y[b]
+
+        sxy = np.dot(xb, yb)
+        sx  = xb.sum()
+        sy  = yb.sum()
+
+        pair_sum = m * sxy - sx * sy
+
+        Tks[k] = pair_sum / (m * (m - 1))
+
     return np.sum(Tks)
 
 def T_binary(X, Y, Z, bins):
@@ -53,9 +63,6 @@ def sample_XYZ_fat_tail(n, theta, rho, *, rng=None):
     Z = rng.random(size=n)
     U = rng.normal(size=n)
 
-    # X = theta * Z + rho * U + rng.choice([-1, 1], size = n) * rng.fat_tail(2, size = n)
-    # Y = theta * Z + rho * U + rng.choice([-1, 1], size = n) * rng.fat_tail(2, size = n)
-
     X = theta * Z + rho * U + rng.standard_cauchy(size=n)
     Y = theta * Z + rho * U + rng.standard_cauchy(size=n)
 
@@ -85,8 +92,8 @@ def fixed_bins(Z, bin_width):
     return bins
 
 def main(recompute):
-    ns = np.asarray([50, 100, 200, 400])
-    bin_width_exps = np.asarray([-1, -0.5, -0.4, -0.35, -0.25, -0.2])
+    ns = np.asarray([50, 100, 200, 400, 800, 1600])
+    # bin_size_exps = np.asarray([2, 4, 8, 16, 0.25, 0.5, 0.75])
     support_size_exps = np.asarray([0, 0.25, 0.5, 0.75, 1.0])
 
     data_dir = Path("data")
@@ -95,7 +102,7 @@ def main(recompute):
     fig_dir  = Path("figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    f_adapt = data_dir / "example_1_ps_adaptive_bins.npy"
+    # f_adapt = data_dir / "example_1_ps_adaptive_bins.npy"
     f_fat_tail = data_dir / "example_1_ps_fat_tail.npy"
     f_nnpt = data_dir / "example_1_ps_nnpt.npy"
 
@@ -103,16 +110,16 @@ def main(recompute):
     p_val_mc_reps = 100
 
     if recompute:
-        ps_adaptive_bins = utility.p_val_dist(
-            [n for _ in bin_width_exps for n in ns],
-            lambda n, rng: sample_XYZ(n, 1, 0.0, rng=rng),
-            [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
-             for exp in bin_width_exps for n in ns],
-            T,
-            mc_reps=mc_reps,
-            p_val_mc_reps=p_val_mc_reps
-        )
-        np.save(f_adapt, ps_adaptive_bins)
+        # ps_adaptive_bins = utility.p_val_dist(
+        #     [n for _ in bin_width_exps for n in ns],
+        #     lambda n, rng: sample_XYZ(n, 1, 0.0, rng=rng),
+        #     [lambda Z, n=n, exp=exp: adaptive_bins(Z, int(np.floor(2 * np.power(n, 1 + exp))))
+        #      for exp in bin_width_exps for n in ns],
+        #     T,
+        #     mc_reps=mc_reps,
+        #     p_val_mc_reps=p_val_mc_reps
+        # )
+        # np.save(f_adapt, ps_adaptive_bins)
 
         ps_fat_tail = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
@@ -127,7 +134,7 @@ def main(recompute):
 
         ps_nnpt = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
-            [lambda n, rng, exp=exp: sample_XYZ(n, np.power(n, exp), 0.0, rng=rng)
+            [lambda n, rng, exp=exp: sample_XYZ(n, 10 * np.power(n, exp), 0.0, rng=rng)
              for exp in support_size_exps for n in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
@@ -149,15 +156,15 @@ def main(recompute):
         ps_fat_tail = np.load(f_fat_tail, allow_pickle=True)
         ps_nnpt = np.load(f_nnpt, allow_pickle=True)
 
-    utility.plot_rejection(
-        utility.rejection_rates(ps_adaptive_bins),
-        ns,
-        bin_width_exps,
-        lambda exp: f"m = n^{1 + exp}",
-        savepath=fig_dir / "example_1_adaptive_bins.png",
-        x_axis = "n",
-        y_axis = "Type I error rate"
-    )
+    # utility.plot_rejection(
+    #     utility.rejection_rates(ps_adaptive_bins),
+    #     ns,
+    #     bin_width_exps,
+    #     lambda exp: f"m = n^{1 + exp}",
+    #     savepath=fig_dir / "example_1_adaptive_bins.png",
+    #     x_axis = "n",
+    #     y_axis = "Type I error rate"
+    # )
 
     utility.plot_rejection(
         utility.rejection_rates(ps_fat_tail),
