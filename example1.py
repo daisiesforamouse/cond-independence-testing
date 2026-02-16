@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -36,7 +37,7 @@ def T_binary(X, Y, Z, bins):
     
     return np.mean(Tks)
 
-def sample_XYZ(n, theta, rho, *, rng=None):
+def sample_XYZ(n, theta, *, rng=None):
     if rng is None:
         rng = np.random.default_rng()
 
@@ -44,15 +45,32 @@ def sample_XYZ(n, theta, rho, *, rng=None):
     Y = np.empty(n)
     Z = np.empty(n)
     
-    Z = rng.random(size = n)
-    U = rng.normal(size = n)
+    Z = rng.random(size=n)
 
-    X = theta * Z + rho * U + rng.normal(size = n)
-    Y = theta * Z + rho * U + rng.normal(size = n)
+    X = theta * Z + rng.random(size=n)
+    Y = theta * Z + rng.random(size=n)
 
     return X, Y, Z
 
-def sample_XYZ_fat_tail(n, theta, rho, *, rng=None):
+# def sample_XYZ_fat_tail(n, theta, rho, delta, *, rng=None):
+#     if rng is None:
+#         rng = np.random.default_rng()
+
+#     X = np.empty(n)
+#     Y = np.empty(n)
+#     Z = np.empty(n)
+    
+#     Z = rng.random(size=n)
+#     U = rng.normal(size=n)
+ 
+#     conv_factor = delta / (2 * np.tan(np.pi * (2 * stats.norm.cdf(delta / 2) - 1) / 2))
+
+#     X = theta * Z + rho * U + rng.standard_cauchy(size=n) * conv_factor
+#     Y = theta * Z + rho * U + rng.standard_cauchy(size=n) * conv_factor
+
+#     return X, Y, Z
+
+def sample_XYZ_fat_tail(n, theta, *, rng=None):
     if rng is None:
         rng = np.random.default_rng()
 
@@ -62,12 +80,14 @@ def sample_XYZ_fat_tail(n, theta, rho, *, rng=None):
     
     Z = rng.random(size=n)
     U = rng.normal(size=n)
+ 
+    corrupted_X = rng.random(size = n) <= (1 / n)
+    corrupted_Y = rng.random(size = n) <= (1 / n)
 
-    X = theta * Z + rho * U + rng.standard_cauchy(size=n)
-    Y = theta * Z + rho * U + rng.standard_cauchy(size=n)
+    X = theta * Z + rng.random(size=n) * (1 - corrupted_X) + n * (corrupted_X)
+    Y = theta * Z + rng.random(size=n) * (1 - corrupted_Y) + n * (corrupted_Y)
 
     return X, Y, Z
-
 
 def adaptive_bins(Z, bin_size):
     """
@@ -94,7 +114,7 @@ def fixed_bins(Z, bin_width):
 def main(recompute):
     ns = np.asarray([50, 100, 200, 400, 800, 1600])
     # bin_size_exps = np.asarray([2, 4, 8, 16, 0.25, 0.5, 0.75])
-    support_size_exps = np.asarray([0, 0.25, 0.5, 0.75, 1.0])
+    support_size_exps = np.asarray([0, 0.25, 0.5, 0.75, 0.85])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -123,7 +143,7 @@ def main(recompute):
 
         ps_fat_tail = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
-            [lambda n, rng, exp=exp: sample_XYZ_fat_tail(n, 10 * np.power(n, exp), 0.0, rng=rng)
+            [lambda n, rng, exp=exp: sample_XYZ_fat_tail(n, np.power(n, exp), rng=rng)
              for exp in support_size_exps for n in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
@@ -134,7 +154,7 @@ def main(recompute):
 
         ps_nnpt = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
-            [lambda n, rng, exp=exp: sample_XYZ(n, 10 * np.power(n, exp), 0.0, rng=rng)
+            [lambda n, rng, exp=exp: sample_XYZ(n, np.power(n, exp), rng=rng)
              for exp in support_size_exps for n in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
@@ -145,14 +165,14 @@ def main(recompute):
 
     else:
         # load existing results
-        missing = [p for p in (f_adapt, f_fat_tail, f_nnpt) if not p.exists()]
+        missing = [p for p in (f_fat_tail, f_nnpt) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
                 + "\n".join(str(p) for p in missing)
             )
 
-        ps_adaptive_bins = np.load(f_adapt, allow_pickle=True)
+        # ps_adaptive_bins = np.load(f_adapt, allow_pickle=True)
         ps_fat_tail = np.load(f_fat_tail, allow_pickle=True)
         ps_nnpt = np.load(f_nnpt, allow_pickle=True)
 
