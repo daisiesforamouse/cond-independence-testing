@@ -47,8 +47,10 @@ def sample_XYZ(n, theta, rho, *, rng):
     Z = rng.random(size = n)
     U = rng.normal(size = n)
 
-    X = theta * Z + rho * U + rng.normal(size = n)
-    Y = theta * Z + rho * U + rng.normal(size = n)
+    mean = (32 / 3) * np.pow(Z, 3) + 16 * np.pow(Z, 2) + (19 / 3) * Z
+
+    X = theta * mean + rho * U + rng.normal(size = n)
+    Y = theta * mean + rho * U + rng.normal(size = n)
 
     return X, Y, Z
 
@@ -74,8 +76,8 @@ def fixed_bins(Z, bin_width):
     return bins
 
 def main(recompute):
-    ns = np.asarray([50, 100, 200, 400, 800, 1600])
-    bin_sizes = [2, 4, 8, 0.1, 0.25, 0.5]
+    ns = np.asarray([100, 200, 400, 800, 1600, 3200])
+    bin_sizes = [2, 4, 8, 16, 0.25, 0.5]
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -86,9 +88,10 @@ def main(recompute):
     f_binary = data_dir / "example_2_ps_binary.npy"
     f_sizing = data_dir / "example_2_ps_sizing.npy"
     f_fixed = data_dir / "example_2_ps_fixed.npy"
+    f_validity = data_dir / "example_2_validity.npy"
 
-    mc_reps = 400
-    p_val_mc_reps = 400
+    mc_reps = 100
+    p_val_mc_reps = 250
 
     if recompute:
         test_fns = [T_binary, T]
@@ -102,12 +105,12 @@ def main(recompute):
         )
         np.save(f_binary, ps_binary)
 
-        bin_sizes_with_n = [size if size > 1 else int(np.floor(2 * np.power(n, size)))
+        bin_sizes_with_n = [size if size > 1 else int(np.floor(np.power(n, size)))
                             for size in bin_sizes for n in ns]
         ps_sizing = utility.p_val_dist(
             [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
-            [lambda Z: adaptive_bins(Z, size) for size in bin_sizes_with_n],
+            [lambda Z, size=size: adaptive_bins(Z, size) for size in bin_sizes_with_n],
             T,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
@@ -118,15 +121,26 @@ def main(recompute):
         ps_fixed = utility.p_val_dist(
             [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
-            [lambda Z: fixed_bins(Z, width) for width in bin_widths_with_n],
+            [lambda Z, width=width: fixed_bins(Z, width) for width in bin_widths_with_n],
             T,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
         )
         np.save(f_fixed, ps_fixed)
+
+        ps_validity = utility.p_val_dist(
+            [n for _ in bin_sizes for n in ns],
+            lambda n, rng: sample_XYZ(n, 1, 0.0, rng=rng),
+            [lambda Z, size=size: adaptive_bins(Z, size) for size in bin_sizes_with_n],
+            T,
+            mc_reps=mc_reps,
+            p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f_validity, ps_validity)
+ 
     else:
         # load existing results
-        missing = [p for p in (f_binary, f_sizing) if not p.exists()]
+        missing = [p for p in (f_binary, f_sizing, f_fixed, f_validity) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
@@ -136,6 +150,7 @@ def main(recompute):
         ps_binary = np.load(f_binary, allow_pickle=True)
         ps_sizing = np.load(f_sizing, allow_pickle=True)
         ps_fixed = np.load(f_fixed, allow_pickle=True)
+        ps_validity = np.load(f_validity, allow_pickle=True)
 
     utility.plot_rejection(
         utility.rejection_rates(ps_binary),
@@ -144,7 +159,7 @@ def main(recompute):
         lambda name: name,
         savepath=fig_dir / "example_2_binary.png",
         x_axis = "n",
-        y_axis = "Type I error rate"
+        y_axis = "Power"
     )
 
     utility.plot_rejection(
@@ -154,7 +169,7 @@ def main(recompute):
         lambda size: f"m = {size}" if size > 1 else f"m = n^{size}",
         savepath=fig_dir / "example_2_sizing.png",
         x_axis = "n",
-        y_axis = "Type I error rate"
+        y_axis = "Power"
     )
 
     utility.plot_rejection(
@@ -163,6 +178,16 @@ def main(recompute):
         bin_sizes,
         lambda size: f"width = {size} / n" if size > 1 else f"width = n^{size - 1}",
         savepath=fig_dir / "example_2_fixed.png",
+        x_axis = "n",
+        y_axis = "Power"
+    )
+
+    utility.plot_rejection(
+        utility.rejection_rates(ps_validity),
+        ns,
+        bin_sizes,
+        lambda size: f"m = {size}" if size > 1 else f"m = n^{size}",
+        savepath=fig_dir / "example_2_validity.png",
         x_axis = "n",
         y_axis = "Type I error rate"
     )

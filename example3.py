@@ -6,12 +6,15 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial import cKDTree
+from scipy.special import softmax
 
 import seaborn as sns
 
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
+
+sns.set_theme(style="whitegrid", context="paper")
 
 def center(X):
     row_mean = X.mean(axis=1, keepdims=True)
@@ -20,6 +23,27 @@ def center(X):
     return X - row_mean - col_mean + grand_mean
 
 def T(X, Y, Z, bins):
+    Tks = np.zeros(len(bins))
+    for k, b in enumerate(bins):
+        b = np.asarray(b, dtype=np.intp)
+        m = b.size
+        if m <= 1:
+            continue
+
+        xb = X[b]
+        yb = Y[b]
+
+        sxy = np.dot(xb, yb)
+        sx  = xb.sum()
+        sy  = yb.sum()
+
+        pair_sum = m * sxy - sx * sy
+
+        Tks[k] = pair_sum / (m * (m - 1))
+
+    return np.sum(Tks)
+
+def T_universal(X, Y, Z, bins):
     Tks = np.zeros(len(bins))
     for k, b in enumerate(bins):
         m = len(b)
@@ -43,7 +67,8 @@ def T(X, Y, Z, bins):
 
 def sample_XYZ_circular(n, rho, theta, *, rng):
     """
-    Z has polar representation (radius, angle), where radius is log-normal and angle is uniform on [0, 2pi].
+    Z has polar representation (radius, angle), angle is uniform on [0, 2pi] and the radius (in [1, 2]) is selected
+    such that Z is uniform on an annulus.
     X, Y are maringally N(radius, 1) with correlation rho * sin(theta * angle)
 
     n: number of samples
@@ -56,9 +81,10 @@ def sample_XYZ_circular(n, rho, theta, *, rng):
     X = np.empty(n)
     Y = np.empty(n)
     Z = np.empty(n)
-    
-    radii = rng.lognormal(mean = 0.0, sigma = 0.2, size = n)
-    angles = rng.random(size = n) * 2 * np.pi
+
+    radii = np.sqrt(1 + (5 / 4) * rng.random(size=n))
+    # radii = np.random.lognormal(mean = 1.0, sigma=0.15, size=n)
+    angles = rng.random(size=n) * 2 * np.pi
 
     Z = np.array([[radius * np.cos(angle), radius * np.sin(angle)] for angle, radius in zip(angles, radii)])
 
@@ -195,10 +221,13 @@ def sa_bins(
     k,
     *,
     seed=0,
-    steps=50_000,
+    steps=50000,
     T0=1.0,
     Tend=1e-4,
     p_norm=2,
+    focus_bins=True,
+    partner_mode="near",
+    refresh_every=200
 ):
     """
     Simulated-annealing partition of points into groups of size k (last group may be smaller).
@@ -276,16 +305,55 @@ def sa_bins(
     # temperature schedule (geometric)
     Ts = np.geomspace(T0, Tend, num=max(2, steps))
 
+    eps = 1e-12
+
+    def make_cost_probs(costs):
+        return softmax(np.asarray(costs, dtype=float) / 0.5)
+
+    def compute_centroids(bins):
+        C = np.zeros((len(bins), Z.shape[1]), dtype=float)
+        for bi, b in enumerate(bins):
+            C[bi] = Z[b].mean(axis=0)
+        return C
+
+    costs = np.array([bin_cost(b) for b in bins], dtype=float)
+    cur = float(costs.sum())
+
+    probs = make_cost_probs(costs)
+
     # swap bins in two bins for simulated annealing
     for t in range(steps):
         T = Ts[t]
 
-        # choose two different bins
-        i, bj = rng.integers(0, B, size=2)
-        if i == bj:
-            continue
+        if t % refresh_every == 0:
+            if focus_bins:
+                probs = make_cost_probs(costs)
+            if partner_mode == "near":
+                centroids = compute_centroids(bins)
 
-        # choose points within those bins
+        # choose offender bin i
+        if focus_bins:
+            i = int(rng.choice(B, p=probs))
+        else:
+            i = int(rng.integers(0, B))
+
+        # choose partner bin j
+        if partner_mode == "near":
+            d2 = np.sum((centroids - centroids[i])**2, axis=1)
+            d2[i] = np.inf
+            # closer => larger probability, using softmax on negative distances
+            pj = softmax(-d2 / 0.05)
+            bj = int(rng.choice(B, p=pj))
+        elif partner_mode == "cost":
+            bj = int(rng.choice(B, p=probs))
+            if bj == i:
+                continue
+        else:  # "uniform"
+            bj = int(rng.integers(0, B))
+            if bj == i:
+                continue
+
+        # pick points and do swap as before
         ai = int(rng.choice(bins[i]))
         aj = int(rng.choice(bins[bj]))
 
@@ -319,12 +387,9 @@ def sa_bins(
     return out
 
 def main(recompute):
-    ns = np.asarray([50, 100, 200, 400, 800])
-    bin_sizes = np.asarray([4, 8, 16])
-    grid_sizes = np.asarray([0.1, 0.2, 0.3, 0.4, 0.5])
-
-    bin_sizes_1d = np.asarray([2, 4, 8, 0.1, 0.25, 0.5])
-    grid_sizes_1d = np.asarray([-1, -0.75, -0.5])
+    ns = np.asarray([100, 250, 500, 750, 1000])
+    bin_sizes = np.asarray([4, 8, 12])
+    grid_sizes = np.asarray([0.1, 0.5, 1, 1.5])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -334,9 +399,11 @@ def main(recompute):
 
     f_2d_sizing = data_dir / "example_3_2d_sizing.npy"
     f_2d_fixed = data_dir / "example_3_2d_fixed.npy"
+    f_2d_sizing_validity = data_dir / "example_3_2d_sizing_validity.npy"
+    f_2d_fixed_validity = data_dir / "example_3_2d_fixed_validity.npy"
 
-    mc_reps = 250
-    p_val_mc_reps = 250
+    mc_reps = 100
+    p_val_mc_reps = 100
 
     if recompute:
         ps_2d_sizing = utility.p_val_dist(
@@ -344,7 +411,7 @@ def main(recompute):
             lambda n, rng: sample_XYZ_circular(n, 0.5, 5.0, rng=rng),
             [lambda Z, n=n, size=size: sa_bins(Z, size)
              for size in bin_sizes for n in ns],
-            T,
+            T_universal,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
         )
@@ -355,14 +422,36 @@ def main(recompute):
             lambda n, rng: sample_XYZ_circular(n, 0.5, 5.0, rng=rng),
             [lambda Z, n=n, size=size: fixed_bins_2d(Z, size)
              for size in grid_sizes for n in ns],
-            T,
+            T_universal,
             mc_reps=mc_reps,
             p_val_mc_reps=p_val_mc_reps
         )
         np.save(f_2d_fixed, ps_2d_fixed)
+
+        ps_2d_sizing_validity = utility.p_val_dist(
+            [n for _ in bin_sizes for n in ns],
+            lambda n, rng: sample_XYZ_circular(n, 0.0, 0.0, rng=rng),
+            [lambda Z, n=n, size=size: sa_bins(Z, size)
+             for size in bin_sizes for n in ns],
+            T_universal,
+            mc_reps=mc_reps,
+            p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f_2d_sizing_validity, ps_2d_sizing_validity)
+
+        ps_2d_fixed_validity = utility.p_val_dist(
+            [n for _ in grid_sizes for n in ns],
+            lambda n, rng: sample_XYZ_circular(n, 0.0, 0.0, rng=rng),
+            [lambda Z, n=n, size=size: fixed_bins_2d(Z, size)
+             for size in grid_sizes for n in ns],
+            T_universal,
+            mc_reps=mc_reps,
+            p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f_2d_fixed_validity, ps_2d_fixed_validity)
     else:
         # load existing results
-        missing = [p for p in (f_2d_sizing, f_2d_fixed) if not p.exists()]
+        missing = [p for p in (f_2d_sizing, f_2d_fixed, f_2d_sizing_validity, f_2d_fixed_validity) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing saved results. Re-run with --recompute.\n"
@@ -371,6 +460,8 @@ def main(recompute):
 
         ps_2d_sizing = np.load(f_2d_sizing, allow_pickle=True)
         ps_2d_fixed = np.load(f_2d_fixed, allow_pickle=True)
+        ps_2d_sizing_validity = np.load(f_2d_sizing_validity, allow_pickle=True)
+        ps_2d_fixed_validity = np.load(f_2d_fixed_validity, allow_pickle=True)
 
     utility.plot_rejection(
         utility.rejection_rates(ps_2d_sizing),
@@ -379,7 +470,7 @@ def main(recompute):
         lambda size: f"m = {size}",
         savepath=fig_dir / "example_3_2d_sizing.png",
         x_axis = "n",
-        y_axis = "Type I error rate"
+        y_axis = "Power"
     )
 
     utility.plot_rejection(
@@ -389,8 +480,32 @@ def main(recompute):
         lambda size: f"grid size = {size}",
         savepath=fig_dir / "example_3_2d_fixed.png",
         x_axis = "n",
+        y_axis = "Power"
+    )
+
+    utility.plot_rejection(
+        utility.rejection_rates(ps_2d_sizing_validity),
+        ns,
+        bin_sizes,
+        lambda size: f"m = {size}",
+        savepath=fig_dir / "example_3_2d_sizing_validity.png",
+        x_axis = "n",
         y_axis = "Type I error rate"
     )
+
+    utility.plot_rejection(
+        utility.rejection_rates(ps_2d_fixed_validity),
+        ns,
+        grid_sizes,
+        lambda size: f"grid size = {size}",
+        savepath=fig_dir / "example_3_2d_fixed_validity.png",
+        x_axis = "n",
+        y_axis = "Type I error rate"
+    )
+
+    _, _, Z = sample_XYZ_circular(750, 0, 0, rng=None)
+    utility.plot_Z_bins_connected(Z, sa_bins(Z, 8, steps=100_000), savepath=fig_dir / "example_3_sa_bins.png")
+    utility.plot_Z_bins_connected(Z, fixed_bins_2d(Z, 0.5), savepath=fig_dir / "example_3_fixed_bins.png")
 
 
 

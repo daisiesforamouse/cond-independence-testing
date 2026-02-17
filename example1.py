@@ -9,33 +9,36 @@ from scipy import stats
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+# def T(X, Y, Z, bins):
+#     Tks = np.zeros(len(bins))
+#     excess = 0
+#     for k, b in enumerate(bins):
+#         m = b.size
+#         if m <= 1:
+#             continue
+
+#         xb = X[b]
+#         yb = Y[b]
+
+#         sxy = np.dot(xb, yb)
+#         sx = xb.sum()
+#         sy = yb.sum()
+
+#         pair_sum = m * sxy - sx * sy
+
+#         Tks[k] = pair_sum / (m * (m - 1))
+#     return np.sum(Tks)
+
 def T(X, Y, Z, bins):
-    Tks = np.zeros(len(bins))
-    for k, b in enumerate(bins):
-        b = np.asarray(b, dtype=np.intp)
-        m = b.size
-        if m <= 1:
-            continue
+    X = np.asarray(X)
+    Y = np.asarray(Y)
 
-        xb = X[b]
-        yb = Y[b]
+    idx = np.asarray(bins, dtype=np.intp)
+    i = idx[:, 0]
+    j = idx[:, 1]
 
-        sxy = np.dot(xb, yb)
-        sx  = xb.sum()
-        sy  = yb.sum()
-
-        pair_sum = m * sxy - sx * sy
-
-        Tks[k] = pair_sum / (m * (m - 1))
-
+    Tks = (X[i] - X[j]) * (Y[i] - Y[j])
     return np.sum(Tks)
-
-def T_binary(X, Y, Z, bins):
-    Tks = np.zeros(len(bins))
-    for k, b in enumerate(bins):
-        Tks[k] = (X[b[i]] - X[b[j]]) * (Y[b[i]] - Y[b[j]]) >= 0
-    
-    return np.mean(Tks)
 
 def sample_XYZ(n, theta, *, rng=None):
     if rng is None:
@@ -45,30 +48,12 @@ def sample_XYZ(n, theta, *, rng=None):
     Y = np.empty(n)
     Z = np.empty(n)
     
-    Z = rng.random(size=n)
+    Z = rng.random(size=n) * theta
 
-    X = theta * Z + rng.random(size=n)
-    Y = theta * Z + rng.random(size=n)
+    X = Z + rng.random(size=n)
+    Y = Z + rng.random(size=n)
 
     return X, Y, Z
-
-# def sample_XYZ_fat_tail(n, theta, rho, delta, *, rng=None):
-#     if rng is None:
-#         rng = np.random.default_rng()
-
-#     X = np.empty(n)
-#     Y = np.empty(n)
-#     Z = np.empty(n)
-    
-#     Z = rng.random(size=n)
-#     U = rng.normal(size=n)
- 
-#     conv_factor = delta / (2 * np.tan(np.pi * (2 * stats.norm.cdf(delta / 2) - 1) / 2))
-
-#     X = theta * Z + rho * U + rng.standard_cauchy(size=n) * conv_factor
-#     Y = theta * Z + rho * U + rng.standard_cauchy(size=n) * conv_factor
-
-#     return X, Y, Z
 
 def sample_XYZ_fat_tail(n, theta, *, rng=None):
     if rng is None:
@@ -78,14 +63,13 @@ def sample_XYZ_fat_tail(n, theta, *, rng=None):
     Y = np.empty(n)
     Z = np.empty(n)
     
-    Z = rng.random(size=n)
-    U = rng.normal(size=n)
+    Z = rng.random(size=n) * theta
  
-    corrupted_X = rng.random(size = n) <= (1 / n)
-    corrupted_Y = rng.random(size = n) <= (1 / n)
+    corrupted_X = rng.random(size = n) <= (2 / n)
+    corrupted_Y = rng.random(size = n) <= (2 / n)
 
-    X = theta * Z + rng.random(size=n) * (1 - corrupted_X) + n * (corrupted_X)
-    Y = theta * Z + rng.random(size=n) * (1 - corrupted_Y) + n * (corrupted_Y)
+    X = Z + rng.random(size=n) * (1 - corrupted_X) + n * (corrupted_X) * rng.choice([1, -1], size=n)
+    Y = Z + rng.random(size=n) * (1 - corrupted_Y) + n * (corrupted_Y) * rng.choice([1, -1], size=n)
 
     return X, Y, Z
 
@@ -112,9 +96,9 @@ def fixed_bins(Z, bin_width):
     return bins
 
 def main(recompute):
-    ns = np.asarray([50, 100, 200, 400, 800, 1600])
+    ns = np.asarray([50, 100, 200, 400, 800, 1600, 3200])
     # bin_size_exps = np.asarray([2, 4, 8, 16, 0.25, 0.5, 0.75])
-    support_size_exps = np.asarray([0, 0.25, 0.5, 0.75, 0.85])
+    support_size_exps = np.asarray([0, 0.5, 0.6, 0.75])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -126,8 +110,8 @@ def main(recompute):
     f_fat_tail = data_dir / "example_1_ps_fat_tail.npy"
     f_nnpt = data_dir / "example_1_ps_nnpt.npy"
 
-    mc_reps = 100
-    p_val_mc_reps = 100
+    mc_reps = 1000
+    p_val_mc_reps = 2000
 
     if recompute:
         # ps_adaptive_bins = utility.p_val_dist(
@@ -144,7 +128,7 @@ def main(recompute):
         ps_fat_tail = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
             [lambda n, rng, exp=exp: sample_XYZ_fat_tail(n, np.power(n, exp), rng=rng)
-             for exp in support_size_exps for n in ns],
+             for exp in support_size_exps for _ in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
             mc_reps=mc_reps,
@@ -155,7 +139,7 @@ def main(recompute):
         ps_nnpt = utility.p_val_dist(
             [n for _ in support_size_exps for n in ns],
             [lambda n, rng, exp=exp: sample_XYZ(n, np.power(n, exp), rng=rng)
-             for exp in support_size_exps for n in ns],
+             for exp in support_size_exps for _ in ns],
             lambda Z: adaptive_bins(Z, 2),
             T,
             mc_reps=mc_reps,
@@ -176,16 +160,6 @@ def main(recompute):
         ps_fat_tail = np.load(f_fat_tail, allow_pickle=True)
         ps_nnpt = np.load(f_nnpt, allow_pickle=True)
 
-    # utility.plot_rejection(
-    #     utility.rejection_rates(ps_adaptive_bins),
-    #     ns,
-    #     bin_width_exps,
-    #     lambda exp: f"m = n^{1 + exp}",
-    #     savepath=fig_dir / "example_1_adaptive_bins.png",
-    #     x_axis = "n",
-    #     y_axis = "Type I error rate"
-    # )
-
     utility.plot_rejection(
         utility.rejection_rates(ps_fat_tail),
         ns,
@@ -193,7 +167,8 @@ def main(recompute):
         lambda exp: f"theta = n^{exp}",
         savepath=fig_dir / "example_1_fat_tail.png",
         x_axis = "n",
-        y_axis = "Type I error rate"
+        y_axis = "Type I error rate",
+        x_geom=True
     )
 
     utility.plot_rejection(
@@ -203,7 +178,8 @@ def main(recompute):
         lambda exp: f"theta = n^{exp}",
         savepath=fig_dir / "example_1_nnpt.png",
         x_axis = "n",
-        y_axis = "Type I error rate"
+        y_axis = "Type I error rate",
+        x_geom=True
     )
 
 

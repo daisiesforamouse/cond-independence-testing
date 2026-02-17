@@ -3,6 +3,9 @@ import lpt
 
 from tqdm import tqdm
 
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.csgraph import minimum_spanning_tree
+
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -102,17 +105,22 @@ def rejection_rates(ps):
     """
     return np.apply_along_axis(lambda x: np.mean(x < 0.05), 1, ps)
 
-def plot_rejection(rejection_rates,
-                   x_params,
-                   params,
-                   get_param_label,
-                   alpha=0.05,
-                   ax=None,
-                   title="",
-                   x_axis="",
-                   y_axis="",
-                   savepath=None,
-                   dpi=200):
+def plot_rejection(
+        rejection_rates,
+        x_params,
+        params,
+        get_param_label,
+        alpha=0.05,
+        ax=None,
+        title="",
+        x_axis="",
+        y_axis="",
+        savepath=None,
+        x_geom=False,
+        dpi=200,
+        palette="tab10",
+        marker="o"
+):
     """
     type_I_adaptive: array-like of length len(x_params)*len(params)
     Assumes the batches were ordered like:
@@ -128,23 +136,42 @@ def plot_rejection(rejection_rates,
     if rejection_rates.size != E * N:
         raise ValueError(f"Expected {E*N} entries, got {rejection_rates.size}")
 
-    Y = rejection_rates.reshape(E, N)  # rows=exp (bin setting), cols=n
+    Y = rejection_rates.reshape(E, N)
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(7, 4.5))
     else:
         fig = ax.figure
 
-    for i, param in enumerate(params):
-        ax.plot(x_params, Y[i], marker="o", linewidth=2, label=get_param_label(param))
+    colors = sns.color_palette(palette, n_colors=E)
 
-    ax.axhline(alpha, color="k", linestyle="--", linewidth=1, label=f"alpha={alpha}")
+    for i, param in enumerate(params):
+        ax.plot(
+            x_params, Y[i],
+            color=colors[i],
+            marker=marker,
+            markersize=6,
+            linewidth=2.2,
+            label=get_param_label(param),
+        )
+
+    ax.axhline(alpha, color="0.2", linestyle="--", linewidth=1.5, alpha=0.8)
+
     ax.set_xlabel(x_axis)
     ax.set_ylabel(y_axis)
-    ax.set_xticks(x_params)
-    ax.set_ylim(0, max(0.1, float(np.max(rejection_rates)) * 1.1))
-    ax.legend(title=title, fontsize=9)
-    ax.grid(True, alpha=0.3)
+    if title:
+        ax.set_title(title)
+
+    if x_geom:
+        ax.set_xscale("log", base=10)
+
+    ax.set_ylim(0, max(0.1, float(np.max(rejection_rates)) * 1.15))
+
+    ax.legend(frameon=True, fancybox=True, framealpha=0.9, fontsize=10, title=None)
+
+    sns.despine(ax=ax)
+    ax.grid(True, which="major", alpha=0.25)
+    ax.grid(True, which="minor", alpha=0.12)
 
     if savepath is not None:
         fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
@@ -152,8 +179,24 @@ def plot_rejection(rejection_rates,
     return fig, ax
 
 
-def plot_Z_bins_connected(Z, bins, *, ax=None, s=35, alpha=0.9, lw=1.5,
-                          palette="tab20", show_points=True):
+def plot_Z_bins_connected(
+        Z,
+        bins,
+        *,
+        ax=None,
+        s=35,
+        alpha=0.9,
+        lw=1.5,
+        palette="tab20",
+        show_points=True,
+        line_alpha=0.75,
+        point_edgecolor="white",
+        point_linewidth=0.6,
+        theme=True,
+        savepath=None,
+        dpi=200,
+        title="",
+):
     """
     Scatter plot of 2D points Z, with points belonging to the same bin connected.
 
@@ -173,37 +216,65 @@ def plot_Z_bins_connected(Z, bins, *, ax=None, s=35, alpha=0.9, lw=1.5,
     -------
     fig, ax
     """
+    if theme:
+        sns.set_theme(style="whitegrid", context="paper")
+
     Z = np.asarray(Z)
     if Z.ndim != 2 or Z.shape[1] != 2:
         raise ValueError(f"Expected Z of shape (n, 2), got {Z.shape}")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 6))
+        fig, ax = plt.subplots(figsize=(6.2, 6.2))
     else:
         fig = ax.figure
 
     colors = sns.color_palette(palette, n_colors=max(1, len(bins)))
 
+    # background points (light)
     if show_points:
-        sns.scatterplot(x=Z[:, 0], y=Z[:, 1], ax=ax, s=s, alpha=alpha, color="k", linewidth=0)
+        ax.scatter(
+            Z[:, 0], Z[:, 1],
+            s=s, c="0.15", alpha=0.25, linewidths=0, zorder=1
+        )
 
     for b, idx in enumerate(bins):
         idx = np.asarray(idx, dtype=int)
         if idx.size == 0:
             continue
-
         pts = Z[idx]
+        c = colors[b]
 
-        # draw colored points for this bin (on top)
+        # points for this bin
         if show_points:
-            sns.scatterplot(x=pts[:, 0], y=pts[:, 1], ax=ax, s=s, alpha=alpha,
-                            color=colors[b], linewidth=0)
+            ax.scatter(
+                pts[:, 0], pts[:, 1],
+                s=s, color=c, alpha=alpha,
+                edgecolors=point_edgecolor, linewidths=point_linewidth,
+                zorder=3
+            )
 
-        # connect points within the bin
         if idx.size >= 2:
-            ax.plot(pts[:, 0], pts[:, 1], color=colors[b], lw=lw, alpha=0.9)
+            # build MST on pairwise distances
+            D = squareform(pdist(pts))
+            mst = minimum_spanning_tree(D).tocoo()
+            for i, j in zip(mst.row, mst.col):
+                ax.plot(
+                    [pts[i, 0], pts[j, 0]],
+                    [pts[i, 1], pts[j, 1]],
+                    color=c, lw=lw, alpha=line_alpha, zorder=2
+                )
 
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("Z1")
     ax.set_ylabel("Z2")
+    if title:
+        ax.set_title(title)
+
+    sns.despine(ax=ax)
+    ax.grid(True, which="major", alpha=0.25)
+    ax.grid(True, which="minor", alpha=0.12)
+
+    if savepath is not None:
+        fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
+
     return fig, ax
