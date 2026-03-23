@@ -17,6 +17,7 @@ def p_val_dist(n,
                mc_reps=1000,
                p_val_mc_reps=1000,
                progress=True,
+               alpha=0.05,
                n_jobs=-1,
                base_seed=0):
     """
@@ -65,6 +66,7 @@ def p_val_dist(n,
         return lpt.test_ci(
             X, Y, Z, bins, Tb,
             mc_reps=int(p_val_mc_repsb),
+            alpha=alpha,
             seed=test_seed,
             n_jobs=1,
         )
@@ -119,7 +121,8 @@ def plot_rejection(
         x_geom=False,
         dpi=200,
         palette="tab10",
-        marker="o"
+        marker="o",
+        y_lim=None
 ):
     """
     type_I_adaptive: array-like of length len(x_params)*len(params)
@@ -165,7 +168,10 @@ def plot_rejection(
     if x_geom:
         ax.set_xscale("log", base=10)
 
-    ax.set_ylim(0, max(0.1, float(np.max(rejection_rates)) * 1.15))
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
+    else:
+        ax.set_ylim(0, max(0.1, float(np.max(rejection_rates)) * 1.15))
 
     ax.legend(frameon=True, fancybox=True, framealpha=0.9, fontsize=10, title=None)
 

@@ -1,9 +1,4 @@
 from joblib import Parallel, delayed
-import joblib
-
-from tqdm.auto import tqdm
-from tqdm_joblib import tqdm_joblib
-
 
 import numpy as np
 
@@ -28,6 +23,7 @@ def test_ci(X, Y, Z,
             T,
             mc_reps=1000,
             batch_size=20,
+            alpha=0.05,
             n_jobs=-2,
             seed = None):
     if isinstance(seed, np.random.SeedSequence):
@@ -35,6 +31,7 @@ def test_ci(X, Y, Z,
     else:
         root_ss = np.random.SeedSequence(seed)
 
+    tie_rng = np.random.default_rng(root_ss.spawn(1)[0])
     rep_ss = root_ss.spawn(int(mc_reps))
 
     rep_ss_batches = [rep_ss[i:i + batch_size] for i in range(0, mc_reps, batch_size)]
@@ -53,4 +50,8 @@ def test_ci(X, Y, Z,
     )
 
     T_original = T(X, Y, Z, bins)
-    return float(np.mean(perm_stats >= T_original))
+
+    greater_prop = np.mean(perm_stats > T_original)
+    equal_prop = np.mean(perm_stats == T_original)
+
+    return greater_prop + tie_rng.random() * equal_prop
