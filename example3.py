@@ -471,7 +471,7 @@ def main(recompute, sims, bin_plots_only):
     data_dir.mkdir(exist_ok=True)
 
     mc_reps = 250
-    p_val_mc_reps = 250
+    p_val_mc_reps = 1000
 
     sim_configs = {
         "2d_sizing": (

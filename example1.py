@@ -20,13 +20,14 @@ def T(X, Y, Z, bins):
 def T_no_clt(X, Y, Z, bins):
     X = np.asarray(X)
     Y = np.asarray(Y)
+    Z = np.asarray(Z)
 
     idx = np.asarray(bins, dtype=np.intp)
     i = idx[:, 0]
     j = idx[:, 1]
 
     Tks = (X[i] - X[j]) * np.sign(Z[i] - Z[j]) * np.sign((Y[i] - Y[j]) * np.sign(Z[i] - Z[j]))
-    return np.sum(Tks * (Tks >= 1))
+    return np.sum(Tks > 1)
 
 def sample_XYZ(n, theta, *, rng=None):
     if rng is None:
@@ -53,7 +54,8 @@ def adaptive_bins(Z, bin_size):
     return bins
 
 def main(recompute, sims):
-    ns = np.asarray([50, 100, 200, 400, 800, 1600, 3200])
+    # ns = np.asarray([50, 100, 200, 400, 800, 1600, 3200, 6400])
+    ns = np.asarray([6400])
     support_size_exps = np.asarray([0, 0.5, 0.6, 0.75])
 
     data_dir = Path("data")
@@ -62,8 +64,8 @@ def main(recompute, sims):
     fig_dir  = Path("figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    f_no_clt = data_dir / "example_1_ps_no_clt.npy"
-    f_nnpt = data_dir / "example_1_ps_nnpt.npy"
+    f_no_clt = data_dir / "example_1_ps_no_clt_large.npy"
+    f_nnpt = data_dir / "example_1_ps_nnpt_large.npy"
 
     mc_reps = 3000
     p_val_mc_reps = 5000
@@ -73,8 +75,8 @@ def main(recompute, sims):
     batch_ns = [n for _ in support_size_exps for n in ns]
 
     sim_configs = {
-        "no_clt": (f_no_clt, T_no_clt, "example_1_no_clt_testing.png", (0, 0.2)),
-        "nnpt":   (f_nnpt,   T,        "example_1_nnpt.png",   None),
+        "no_clt": (f_no_clt, T_no_clt, "example_1_no_clt_large.png", (0, 0.2)),
+        "nnpt":   (f_nnpt,   T,        "example_1_nnpt_large.png",   None),
     }
 
     for sim in sims:
