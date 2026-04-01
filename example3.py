@@ -7,6 +7,11 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 from scipy.special import softmax
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.csgraph import minimum_spanning_tree
+from tqdm import tqdm
+
+from mpl_toolkits.mplot3d import Axes3D
 
 import seaborn as sns
 
@@ -48,7 +53,7 @@ def T_universal(X, Y, Z, bins):
     for k, b in enumerate(bins):
         m = len(b)
         if m > 1:
-            xb = X[b] 
+            xb = X[b]
             yb = Y[b]
 
             dx = xb[:, None] - xb[None, :]
@@ -72,7 +77,7 @@ def sample_XYZ_circular(n, rho, theta, *, rng):
     X, Y are maringally N(radius, 1) with correlation rho * sin(theta * angle)
 
     n: number of samples
-    rho: strength of X, Y correlation 
+    rho: strength of X, Y correlation
     theta: strength of the oscillation of the X, Y correlation
     """
     if rng is None:
@@ -123,7 +128,7 @@ def adaptive_bins(Z, bin_size):
     """
     Sorts Z and then just bin in order, with each bin of size bin_size
     """
-    order = np.argsort(Z) 
+    order = np.argsort(Z)
     bins = np.array_split(order, np.ceil(len(order) / bin_size).astype(int))
 
     return bins
@@ -388,14 +393,52 @@ def sa_bins(
     out = best_bins
     return out
 
+def estimate_avg_bin_size(sampling_fn, n, bin_width, mc_reps=100, *, rng=None):
+    """
+    Monte Carlo estimate of the mean non-empty bin size for fixed_bins_nd
+    with the given sampling function, sample size, and grid width.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    means = []
+    for _ in range(mc_reps):
+        _, _, Z = sampling_fn(n, rng=rng)
+        sizes = [len(b) for b in fixed_bins_nd(Z, bin_width) if len(b) > 0]
+        if sizes:
+            means.append(np.mean(sizes))
+    return float(np.mean(means)) if means else 0.0
+
+
+def grid_size_for_bin_size(sampling_fn, n, k, *, lo=1e-3, hi=10.0, mc_reps=100, rng=None):
+    """
+    Binary search for the grid width w such that fixed_bins_nd gives
+    average non-empty bin size ≈ k.  Average bin size is monotonically
+    increasing in w.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # expand hi until it is large enough
+    while estimate_avg_bin_size(sampling_fn, n, hi, mc_reps=mc_reps, rng=rng) < k:
+        hi *= 2.0
+
+    for _ in range(10):
+        mid = (lo + hi) / 2.0
+        avg = estimate_avg_bin_size(sampling_fn, n, mid, mc_reps=mc_reps, rng=rng)
+        if avg < k:
+            lo = mid
+        else:
+            hi = mid
+        if (hi - lo) < 1e-4:
+            break
+    return (lo + hi) / 2.0
+
+
 def plot_bins_3d(Z, bins, *, savepath=None, dpi=200, max_bins=40, title="",
                  elev=45, azim=45, lw=1.2, line_alpha=0.7, s=20, point_alpha=0.8):
     """
     3D scatter of points colored by bin membership, with MST edges within each bin.
     """
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-    from scipy.spatial.distance import pdist, squareform
-    from scipy.sparse.csgraph import minimum_spanning_tree
 
     Z = np.asarray(Z)
     fig = plt.figure(figsize=(7, 6))
@@ -454,24 +497,34 @@ def make_bin_plots(fig_dir):
     plot_bins_3d(Z3d, sa_bins(Z3d, 8), savepath=fig_dir / "example_3_3d_sa_bins.png", title="SA bins, 3D Gaussian Z")
     plot_bins_3d(Z3d, fixed_bins_nd(Z3d, 0.5), savepath=fig_dir / "example_3_3d_fixed_bins.png", title="Fixed bins (width=0.5), 3D Gaussian Z")
 
-def main(recompute, sims, bin_plots_only):
+def main(sims):
     ns = np.asarray([100, 250, 500, 750, 1000, 1250])
     bin_sizes = np.asarray([4, 8, 12])
-    grid_sizes = np.asarray([0.1, 0.5, 1, 1.5])
-    grid_sizes_3d = np.asarray([0.25, 0.5, 1, 2])
 
-    fig_dir = Path("figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
+    pairs = [(int(k), int(n)) for k in bin_sizes for n in ns]
+    gw_2d = {}
+    for k, n in tqdm(pairs, desc="grid widths (2D)"):
+        gw_2d[(k, n)] = grid_size_for_bin_size(
+            lambda n, rng: sample_XYZ_circular(n, 0.0, 0.0, rng=rng), n, k)
+    gw_3d = {}
+    for k, n in tqdm(pairs, desc="grid widths (3D)"):
+        gw_3d[(k, n)] = grid_size_for_bin_size(
+            lambda n, rng: sample_XYZ_gaussian3d(n, 0.0, 0.5, rng=rng), n, k)
 
-    if bin_plots_only:
-        make_bin_plots(fig_dir)
-        return
+    print("\n2D grid widths (rows=bin_size, cols=n):")
+    print(f"{'k\\n':>6}", *[f"{n:>8}" for n in ns])
+    for k in bin_sizes:
+        print(f"{k:>6}", *[f"{gw_2d[(int(k), int(n))]:>8.4f}" for n in ns])
+    print("\n3D grid widths (rows=bin_size, cols=n):")
+    print(f"{'k\\n':>6}", *[f"{n:>8}" for n in ns])
+    for k in bin_sizes:
+        print(f"{k:>6}", *[f"{gw_3d[(int(k), int(n))]:>8.4f}" for n in ns])
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
 
-    mc_reps = 250
-    p_val_mc_reps = 1000
+    mc_reps = 100
+    p_val_mc_reps = 250
 
     sim_configs = {
         "2d_sizing": (
@@ -480,23 +533,13 @@ def main(recompute, sims, bin_plots_only):
             lambda n, rng: sample_XYZ_circular(n, 0.5, 5.0, rng=rng),
             [lambda Z, n=n, size=size: sa_bins(Z, size) for size in bin_sizes for n in ns],
             T_universal,
-            bin_sizes,
-            lambda size: f"m = {size}",
-            "example_3_2d_sizing.png",
-            "Power",
-            None,
         ),
         "2d_fixed": (
             data_dir / "example_3_2d_fixed.npy",
-            [n for _ in grid_sizes for n in ns],
+            [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ_circular(n, 0.5, 5.0, rng=rng),
-            [lambda Z, n=n, size=size: fixed_bins_nd(Z, size) for size in grid_sizes for n in ns],
+            [lambda Z, k=k, n=n: fixed_bins_nd(Z, gw_2d[(int(k), int(n))]) for k in bin_sizes for n in ns],
             T_universal,
-            grid_sizes,
-            lambda size: f"grid size = {size}",
-            "example_3_2d_fixed.png",
-            "Power",
-            None,
         ),
         "2d_sizing_validity": (
             data_dir / "example_3_2d_sizing_validity.npy",
@@ -504,23 +547,13 @@ def main(recompute, sims, bin_plots_only):
             lambda n, rng: sample_XYZ_circular(n, 0.0, 0.0, rng=rng),
             [lambda Z, n=n, size=size: sa_bins(Z, size) for size in bin_sizes for n in ns],
             T_universal,
-            bin_sizes,
-            lambda size: f"m = {size}",
-            "example_3_2d_sizing_validity.png",
-            "Type I error rate",
-            None,
         ),
         "2d_fixed_validity": (
             data_dir / "example_3_2d_fixed_validity.npy",
-            [n for _ in grid_sizes for n in ns],
+            [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ_circular(n, 0.0, 0.0, rng=rng),
-            [lambda Z, n=n, size=size: fixed_bins_nd(Z, size) for size in grid_sizes for n in ns],
+            [lambda Z, k=k, n=n: fixed_bins_nd(Z, gw_2d[(int(k), int(n))]) for k in bin_sizes for n in ns],
             T_universal,
-            grid_sizes,
-            lambda size: f"grid size = {size}",
-            "example_3_2d_fixed_validity.png",
-            "Type I error rate",
-            None,
         ),
         "3d_sizing": (
             data_dir / "example_3_3d_sizing.npy",
@@ -528,23 +561,13 @@ def main(recompute, sims, bin_plots_only):
             lambda n, rng: sample_XYZ_gaussian3d(n, 0.5, 0.5, rng=rng),
             [lambda Z, n=n, size=size: sa_bins(Z, size) for size in bin_sizes for n in ns],
             T_universal,
-            bin_sizes,
-            lambda size: f"m = {size}",
-            "example_3_3d_sizing.png",
-            "Power",
-            None,
         ),
         "3d_fixed": (
             data_dir / "example_3_3d_fixed.npy",
-            [n for _ in grid_sizes_3d for n in ns],
+            [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ_gaussian3d(n, 0.5, 0.5, rng=rng),
-            [lambda Z, n=n, size=size: fixed_bins_nd(Z, size) for size in grid_sizes_3d for n in ns],
+            [lambda Z, k=k, n=n: fixed_bins_nd(Z, gw_3d[(int(k), int(n))]) for k in bin_sizes for n in ns],
             T_universal,
-            grid_sizes_3d,
-            lambda size: f"grid width = {size}",
-            "example_3_3d_fixed.png",
-            "Power",
-            None,
         ),
         "3d_sizing_validity": (
             data_dir / "example_3_3d_sizing_validity.npy",
@@ -552,60 +575,144 @@ def main(recompute, sims, bin_plots_only):
             lambda n, rng: sample_XYZ_gaussian3d(n, 0.0, 0.5, rng=rng),
             [lambda Z, n=n, size=size: sa_bins(Z, size) for size in bin_sizes for n in ns],
             T_universal,
-            bin_sizes,
-            lambda size: f"m = {size}",
-            "example_3_3d_sizing_validity.png",
-            "Type I error rate",
-            None,
         ),
         "3d_fixed_validity": (
             data_dir / "example_3_3d_fixed_validity.npy",
-            [n for _ in grid_sizes_3d for n in ns],
+            [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ_gaussian3d(n, 0.0, 0.5, rng=rng),
-            [lambda Z, n=n, size=size: fixed_bins_nd(Z, size) for size in grid_sizes_3d for n in ns],
+            [lambda Z, k=k, n=n: fixed_bins_nd(Z, gw_3d[(int(k), int(n))]) for k in bin_sizes for n in ns],
             T_universal,
-            grid_sizes_3d,
-            lambda size: f"grid width = {size}",
-            "example_3_3d_fixed_validity.png",
-            "Type I error rate",
-            None,
         ),
     }
 
     for sim in sims:
-        f, batch_ns, sampling_fn, binning_fns, stat, plot_params, label_fn, fig_name, y_axis, y_lim = sim_configs[sim]
-        if recompute:
-            ps = utility.p_val_dist(
-                batch_ns, sampling_fn, binning_fns, stat,
-                mc_reps=mc_reps, p_val_mc_reps=p_val_mc_reps
-            )
-            np.save(f, ps)
-        else:
-            if not f.exists():
-                raise FileNotFoundError(f"Missing saved results: {f}. Re-run with --recompute.")
-            ps = np.load(f, allow_pickle=True)
+        f, batch_ns, sampling_fn, binning_fns, stat = sim_configs[sim]
+        ps = utility.p_val_dist(
+            batch_ns, sampling_fn, binning_fns, stat,
+            mc_reps=mc_reps, p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f, ps)
 
+
+def plot(sims, fig_dir=Path("figures")):
+    ns = np.asarray([100, 250, 500, 750, 1000, 1250])
+    bin_sizes = np.asarray([4, 8, 12])
+
+    data_dir = Path("data")
+    fig_dir = Path(fig_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    alpha_line = {
+        "y": 0.05,
+        "color": "0.2",
+        "linestyle": "--",
+        "linewidth": 1.5,
+        "label": r"$\alpha = 0.05$",
+    }
+
+    sa_label   = lambda size: f"adaptive, $m = {size}$"
+    grid_label = lambda size: f"grid, $m = {size}$"
+
+    def load_rr(path):
+        return utility.rejection_rates(np.load(data_dir / path, allow_pickle=True))
+
+    # --- 2D power ---
+    if "2d_sizing" in sims and "2d_fixed" in sims:
+        _, ax = utility.plot_rejection(
+            load_rr("example_3_2d_sizing.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Power",
+        )
         utility.plot_rejection(
-            utility.rejection_rates(ps),
-            ns,
-            plot_params,
-            label_fn,
-            savepath=fig_dir / fig_name,
-            x_axis="n",
-            y_axis=y_axis,
-            y_lim=y_lim,
+            load_rr("example_3_2d_fixed.npy"), ns, bin_sizes, grid_label,
+            ax=ax, linestyle="dashed", x_axis="n", y_axis="Power",
+            savepath=fig_dir / "example_3_2d_power.png",
+        )
+    elif "2d_sizing" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_2d_sizing.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Power", savepath=fig_dir / "example_3_2d_sizing.png",
+        )
+    elif "2d_fixed" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_2d_fixed.npy"), ns, bin_sizes, grid_label,
+            linestyle="dashed", x_axis="n", y_axis="Power",
+            savepath=fig_dir / "example_3_2d_fixed.png",
         )
 
-    make_bin_plots(fig_dir)
+    # --- 2D validity ---
+    if "2d_sizing_validity" in sims and "2d_fixed_validity" in sims:
+        _, ax = utility.plot_rejection(
+            load_rr("example_3_2d_sizing_validity.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Type I error rate",
+        )
+        utility.plot_rejection(
+            load_rr("example_3_2d_fixed_validity.npy"), ns, bin_sizes, grid_label,
+            ax=ax, linestyle="dashed", x_axis="n", y_axis="Type I error rate",
+            savepath=fig_dir / "example_3_2d_validity.png", extra_lines=[alpha_line],
+        )
+    elif "2d_sizing_validity" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_2d_sizing_validity.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Type I error rate",
+            savepath=fig_dir / "example_3_2d_sizing_validity.png", extra_lines=[alpha_line],
+        )
+    elif "2d_fixed_validity" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_2d_fixed_validity.npy"), ns, bin_sizes, grid_label,
+            linestyle="dashed", x_axis="n", y_axis="Type I error rate",
+            savepath=fig_dir / "example_3_2d_fixed_validity.png", extra_lines=[alpha_line],
+        )
+
+    # --- 3D power ---
+    if "3d_sizing" in sims and "3d_fixed" in sims:
+        _, ax = utility.plot_rejection(
+            load_rr("example_3_3d_sizing.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Power",
+        )
+        utility.plot_rejection(
+            load_rr("example_3_3d_fixed.npy"), ns, bin_sizes, grid_label,
+            ax=ax, linestyle="dashed", x_axis="n", y_axis="Power",
+            savepath=fig_dir / "example_3_3d_power.png",
+        )
+    elif "3d_sizing" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_3d_sizing.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Power", savepath=fig_dir / "example_3_3d_sizing.png",
+        )
+    elif "3d_fixed" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_3d_fixed.npy"), ns, bin_sizes, grid_label,
+            linestyle="dashed", x_axis="n", y_axis="Power",
+            savepath=fig_dir / "example_3_3d_fixed.png",
+        )
+
+    # --- 3D validity ---
+    if "3d_sizing_validity" in sims and "3d_fixed_validity" in sims:
+        _, ax = utility.plot_rejection(
+            load_rr("example_3_3d_sizing_validity.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Type I error rate",
+        )
+        utility.plot_rejection(
+            load_rr("example_3_3d_fixed_validity.npy"), ns, bin_sizes, grid_label,
+            ax=ax, linestyle="dashed", x_axis="n", y_axis="Type I error rate",
+            savepath=fig_dir / "example_3_3d_validity.png", extra_lines=[alpha_line],
+        )
+    elif "3d_sizing_validity" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_3d_sizing_validity.npy"), ns, bin_sizes, sa_label,
+            x_axis="n", y_axis="Type I error rate",
+            savepath=fig_dir / "example_3_3d_sizing_validity.png", extra_lines=[alpha_line],
+        )
+    elif "3d_fixed_validity" in sims:
+        utility.plot_rejection(
+            load_rr("example_3_3d_fixed_validity.npy"), ns, bin_sizes, grid_label,
+            linestyle="dashed", x_axis="n", y_axis="Type I error rate",
+            savepath=fig_dir / "example_3_3d_fixed_validity.png", extra_lines=[alpha_line],
+        )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--recompute",
-        action="store_true",
-        help="Recompute Monte Carlo simulations instead of loading saved .npy files."
-    )
     parser.add_argument(
         "--sims",
         nargs="+",
@@ -619,10 +726,5 @@ if __name__ == "__main__":
         ],
         help="Which simulations to run (default: all)."
     )
-    parser.add_argument(
-        "--bin-plots-only",
-        action="store_true",
-        help="Only generate binning visualisation plots; skip all simulations."
-    )
     args = parser.parse_args()
-    main(args.recompute, args.sims, args.bin_plots_only)
+    main(args.sims)

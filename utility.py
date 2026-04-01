@@ -112,7 +112,6 @@ def plot_rejection(
         x_params,
         params,
         get_param_label,
-        alpha=0.05,
         ax=None,
         title="",
         x_axis="",
@@ -122,7 +121,9 @@ def plot_rejection(
         dpi=200,
         palette="tab10",
         marker="o",
-        y_lim=None
+        linestyle="solid",
+        y_lim=None,
+        extra_lines=None,
 ):
     """
     type_I_adaptive: array-like of length len(x_params)*len(params)
@@ -130,6 +131,10 @@ def plot_rejection(
         for param in params:
             for x_param in x_params:
                     ...
+
+    extra_lines: list of dicts, each with a 'y' key (scalar for a horizontal line,
+        or array of length len(x_params) for a curve) plus any kwargs forwarded to
+        ax.axhline / ax.plot (e.g. color, linestyle, linewidth, label).
     """
     x_params = np.asarray(x_params)
     params = np.asarray(params)
@@ -143,22 +148,50 @@ def plot_rejection(
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(7, 4.5))
+        prior_handles, prior_labels = [], []
     else:
         fig = ax.figure
+        leg = ax.get_legend()
+        if leg is not None:
+            prior_handles = leg.legend_handles
+            prior_labels = [t.get_text() for t in leg.get_texts()]
+        else:
+            prior_handles, prior_labels = [], []
 
     colors = sns.color_palette(palette, n_colors=E)
 
+    new_handles = []
+    new_labels = []
+
     for i, param in enumerate(params):
-        ax.plot(
+        (h,) = ax.plot(
             x_params, Y[i],
             color=colors[i],
             marker=marker,
             markersize=6,
             linewidth=2.2,
-            label=get_param_label(param),
+            linestyle=linestyle,
         )
+        new_handles.append(h)
+        new_labels.append(get_param_label(param))
 
-    ax.axhline(alpha, color="0.2", linestyle="--", linewidth=1.5, alpha=0.8)
+    extra_handles = []
+    extra_labels = []
+    for line in (extra_lines or []):
+        line = dict(line)
+        y = line.pop("y")
+        label = line.pop("label", None)
+        x = line.pop("x", None)
+        if np.isscalar(y):
+            h = ax.axhline(y, **line)
+        else:
+            (h,) = ax.plot(x_params if x is None else x, y, **line)
+        if label is not None:
+            extra_handles.append(h)
+            extra_labels.append(label)
+
+    handles = prior_handles + new_handles + extra_handles
+    labels = prior_labels + new_labels + extra_labels
 
     ax.set_xlabel(x_axis)
     ax.set_ylabel(y_axis)
@@ -173,7 +206,7 @@ def plot_rejection(
     else:
         ax.set_ylim(0, max(0.1, float(np.max(rejection_rates)) * 1.15))
 
-    ax.legend(frameon=True, fancybox=True, framealpha=0.9, fontsize=10, title=None)
+    ax.legend(handles, labels, frameon=True, fancybox=True, framealpha=0.9, fontsize=10, title=None)
 
     sns.despine(ax=ax)
     ax.grid(True, which="major", alpha=0.25)

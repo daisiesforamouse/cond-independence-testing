@@ -5,6 +5,8 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import norm
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -36,7 +38,10 @@ def T_binary(X, Y, Z, bins):
 
     return np.mean(Tks)
 
-def sample_XYZ(n, theta, rho, *, rng):
+def optimal_power(x, rho, alpha=0.05):
+    return norm.cdf(x * rho / (1 - rho ** 2) - norm.ppf(1 - alpha))
+
+def sample_XYZ(n, theta, beta, *, rng):
     if rng is None:
         rng = np.random.default_rng()
 
@@ -49,8 +54,8 @@ def sample_XYZ(n, theta, rho, *, rng):
 
     mean = (32 / 3) * np.pow(Z, 3) + 16 * np.pow(Z, 2) + (19 / 3) * Z
 
-    X = theta * mean + rho * U + rng.normal(size = n)
-    Y = theta * mean + rho * U + rng.normal(size = n)
+    X = theta * mean + beta * U + rng.normal(size = n)
+    Y = theta * mean + beta * U + rng.normal(size = n)
 
     return X, Y, Z
 
@@ -75,15 +80,12 @@ def fixed_bins(Z, bin_width):
 
     return bins
 
-def main(recompute, sims):
+def main(sims):
     ns = np.asarray([200, 400, 800, 1600, 3200, 6400])
     bin_sizes = [2, 6, 12, 0.15, 0.2, 0.35, 0.5]
 
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
-
-    fig_dir  = Path("figures")
-    fig_dir.mkdir(parents=True, exist_ok=True)
 
     mc_reps = 1000
     p_val_mc_reps = 5000
@@ -92,85 +94,189 @@ def main(recompute, sims):
                         for size in bin_sizes for n in ns]
     bin_widths_with_n = np.asarray(bin_sizes_with_n) / np.asarray([n for _ in bin_sizes for n in ns])
 
+    beta = 0.2
     sim_configs = {
         "sizing": (
             data_dir / "example_2_ps_sizing.npy",
             [n for _ in bin_sizes for n in ns],
-            lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
+            lambda n, rng: sample_XYZ(n, 1, beta, rng=rng),
             [lambda Z, size=size: adaptive_bins(Z, size) for size in bin_sizes_with_n],
             T,
-            bin_sizes,
-            lambda size: f"m = {size}" if size > 1 else f"m = n^{size}",
-            "example_2_sizing.png",
-            "Power",
-            None,
         ),
         "fixed": (
             data_dir / "example_2_ps_fixed.npy",
             [n for _ in bin_sizes for n in ns],
-            lambda n, rng: sample_XYZ(n, 1, 0.2, rng=rng),
+            lambda n, rng: sample_XYZ(n, 1, beta, rng=rng),
             [lambda Z, width=width: fixed_bins(Z, width) for width in bin_widths_with_n],
             T,
-            bin_sizes,
-            lambda size: f"width = {size} / n" if size > 1 else f"width = n^{size - 1}",
-            "example_2_fixed.png",
-            "Power",
-            None,
         ),
-        "validity": (
-            data_dir / "example_2_validity.npy",
+        "sizing_validity": (
+            data_dir / "example_2_sizing_validity.npy",
             [n for _ in bin_sizes for n in ns],
             lambda n, rng: sample_XYZ(n, 1, 0.0, rng=rng),
             [lambda Z, size=size: adaptive_bins(Z, size) for size in bin_sizes_with_n],
             T,
-            bin_sizes,
-            lambda size: f"m = {size}" if size > 1 else f"m = n^{size}",
-            "example_2_validity.png",
-            "Type I error rate",
-            None,
+        ),
+        "fixed_validity": (
+            data_dir / "example_2_fixed_validity.npy",
+            [n for _ in bin_sizes for n in ns],
+            lambda n, rng: sample_XYZ(n, 1, 0.0, rng=rng),
+            [lambda Z, width=width: fixed_bins(Z, width) for width in bin_widths_with_n],
+            T,
         ),
     }
 
     for sim in sims:
-        f, batch_ns, sampling_fn, binning_fns, stat, plot_params, label_fn, fig_name, y_axis, y_lim = sim_configs[sim]
-        if recompute:
-            ps = utility.p_val_dist(
-                batch_ns, sampling_fn, binning_fns, stat,
-                mc_reps=mc_reps, p_val_mc_reps=p_val_mc_reps
-            )
-            np.save(f, ps)
-        else:
-            if not f.exists():
-                raise FileNotFoundError(f"Missing saved results: {f}. Re-run with --recompute.")
-            ps = np.load(f, allow_pickle=True)
+        f, batch_ns, sampling_fn, binning_fns, stat = sim_configs[sim]
+        ps = utility.p_val_dist(
+            batch_ns, sampling_fn, binning_fns, stat,
+            mc_reps=mc_reps, p_val_mc_reps=p_val_mc_reps
+        )
+        np.save(f, ps)
 
+
+def plot(sims, fig_dir=Path("figures")):
+    ns = np.asarray([200, 400, 800, 1600, 3200, 6400])
+    bin_sizes = [2, 6, 0.2, 0.5]
+
+    data_dir = Path("data")
+    fig_dir = Path(fig_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    beta = 0.2
+    rho = (beta ** 2) / ((1 + beta ** 2) ** 2)
+    ns_fine = np.arange(ns[0], ns[-1] + 1)
+    opt_power_line = {
+        "x": ns_fine,
+        "y": optimal_power(np.sqrt(ns_fine), rho),
+        "color": "black",
+        "linestyle": "dotted",
+        "linewidth": 1.8,
+        "label": "optimal power",
+    }
+
+    if "sizing" in sims and "fixed" in sims:
+        ps_sizing = np.load(data_dir / "example_2_ps_sizing.npy", allow_pickle=True)
+        ps_fixed = np.load(data_dir / "example_2_ps_fixed.npy", allow_pickle=True)
+        rr_sizing = utility.rejection_rates(ps_sizing)
+        rr_fixed = utility.rejection_rates(ps_fixed)
+        y_lim_combined = (0, 1)
+        _, ax = utility.plot_rejection(
+            rr_sizing,
+            ns,
+            bin_sizes,
+            lambda size: f"$m = {size}$" if size > 1 else f"$m = n^{{{size}}}$",
+            x_axis="n",
+            y_axis="Power",
+            y_lim=y_lim_combined,
+        )
+        utility.plot_rejection(
+            rr_fixed,
+            ns,
+            bin_sizes,
+            lambda size: f"$w = {size}/n$" if size > 1 else f"$w = n^{{{size - 1}}}$",
+            ax=ax,
+            linestyle="dashed",
+            x_axis="n",
+            y_axis="Power",
+            savepath=fig_dir / "example_2_sizing_and_fixed.png",
+            y_lim=y_lim_combined,
+            extra_lines=[opt_power_line],
+        )
+    elif "sizing" in sims:
+        ps = np.load(data_dir / "example_2_ps_sizing.npy", allow_pickle=True)
         utility.plot_rejection(
             utility.rejection_rates(ps),
             ns,
-            plot_params,
-            label_fn,
-            savepath=fig_dir / fig_name,
+            bin_sizes,
+            lambda size: f"$m = {size}$" if size > 1 else f"$m = n^{{{size}}}$",
+            savepath=fig_dir / "example_2_sizing.png",
             x_axis="n",
-            y_axis=y_axis,
-            y_lim=y_lim,
+            y_axis="Power",
+            y_lim=None,
+            extra_lines=[opt_power_line],
+        )
+    elif "fixed" in sims:
+        ps = np.load(data_dir / "example_2_ps_fixed.npy", allow_pickle=True)
+        utility.plot_rejection(
+            utility.rejection_rates(ps),
+            ns,
+            bin_sizes,
+            lambda size: f"$w = {size}/n$" if size > 1 else f"$w = n^{{{size - 1}}}$",
+            savepath=fig_dir / "example_2_fixed.png",
+            x_axis="n",
+            y_axis="Power",
+            y_lim=None,
+            extra_lines=[opt_power_line],
+        )
+
+    alpha_line = {
+        "y": 0.05,
+        "color": "0.2",
+        "linestyle": "--",
+        "linewidth": 1.5,
+        "label": "$\\alpha = 0.05$",
+    }
+
+    if "sizing_validity" in sims:
+        ps = np.load(data_dir / "example_2_sizing_validity.npy", allow_pickle=True)
+        utility.plot_rejection(
+            utility.rejection_rates(ps),
+            ns,
+            bin_sizes,
+            lambda size: f"$m = {size}$" if size > 1 else f"$m = n^{{{size}}}$",
+            savepath=fig_dir / "example_2_sizing_validity.png",
+            x_axis="n",
+            y_axis="Type I error rate",
+            y_lim=None,
+            extra_lines=[alpha_line],
+        )
+        utility.plot_rejection(
+            utility.rejection_rates(ps),
+            ns,
+            bin_sizes,
+            lambda size: f"$m = {size}$" if size > 1 else f"$m = n^{{{size}}}$",
+            savepath=fig_dir / "example_2_sizing_validity_zoom.png",
+            x_axis="n",
+            y_axis="Type I error rate",
+            y_lim=(0, 0.1),
+            extra_lines=[alpha_line],
+        )
+
+    if "fixed_validity" in sims:
+        ps = np.load(data_dir / "example_2_fixed_validity.npy", allow_pickle=True)
+        utility.plot_rejection(
+            utility.rejection_rates(ps),
+            ns,
+            bin_sizes,
+            lambda size: f"$w = {size}/n$" if size > 1 else f"$w = n^{{{size - 1}}}$",
+            savepath=fig_dir / "example_2_fixed_validity.png",
+            x_axis="n",
+            y_axis="Type I error rate",
+            y_lim=None,
+            extra_lines=[alpha_line],
+        )
+        utility.plot_rejection(
+            utility.rejection_rates(ps),
+            ns,
+            bin_sizes,
+            lambda size: f"$w = {size}/n$" if size > 1 else f"$w = n^{{{size - 1}}}$",
+            savepath=fig_dir / "example_2_fixed_validity_zoom.png",
+            x_axis="n",
+            y_axis="Type I error rate",
+            y_lim=(0, 0.1),
+            extra_lines=[alpha_line],
         )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--recompute",
-        action="store_true",
-        help="Recompute Monte Carlo simulations instead of loading saved .npy files."
-    )
-    parser.add_argument(
         "--sims",
         nargs="+",
-        choices=["sizing", "fixed", "validity"],
-        default=["sizing", "fixed", "validity"],
+        choices=["sizing", "fixed", "sizing_validity", "fixed_validity"],
+        default=["sizing", "fixed", "sizing_validity", "fixed_validity"],
         help="Which simulations to run (default: all)."
     )
     args = parser.parse_args()
-    main(args.recompute, args.sims)
-
-
+    main(args.sims)
